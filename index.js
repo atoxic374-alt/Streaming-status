@@ -364,7 +364,28 @@ class TextFont {
 
 class ModClient extends Client {
     constructor(token, config, info) {
-        super({ partials: [], makeCache: Options.cacheWithLimits({ MessageManager: 0 }) });
+        // ── Browser-like WebSocket fingerprint ─────────────────────
+        // Makes the connection look like Discord's official web client
+        super({
+            partials: [],
+            makeCache: Options.cacheWithLimits({ MessageManager: 0 }),
+            checkUpdate: false,
+            readyStatus: false,
+            ws: {
+                properties: {
+                    browser:            'Discord Client',
+                    browser_user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9166 Chrome/124.0.6367.243 Electron/30.2.0 Safari/537.36',
+                    browser_version:    '30.2.0',
+                    client_build_number: 331958,
+                    device:             '',
+                    os:                 'Windows',
+                    os_version:         '10',
+                    release_channel:    'stable',
+                    system_locale:      'en-US',
+                },
+            },
+        });
+
         this.TOKEN = token;
         this.config = config;
         this.targetTime = info.wait;
@@ -377,89 +398,169 @@ class ModClient extends Client {
         this.cacheImage = new Map();
         this.lib = { count: 0, countParty: 1, timestamp: 0, v: { patch: info.version } };
         this.index = {
-            url: 0, text_0: 0, text_1: 0, text_2: 0, text_3: 0, text_4: 0, bm: 0, sm: 0, bt_1: 0, bt_2: 0
+            url: 0, text_0: 0, text_1: 0, text_2: 0,
+            text_3: 0, text_4: 0, bm: 0, sm: 0, bt_1: 0, bt_2: 0
         };
+        // Track if first streaming call (for startup sequence)
+        this._firstPresence = true;
+        this._lastPresenceTs = 0;
     }
 
+    // ── Human simulation helpers ────────────────────────────────────
+
+    /**
+     * Add random jitter to a delay value.
+     * factor 0.25 = ±25% randomness around the base
+     */
+    jitter(ms, factor) {
+        const f = factor ?? (this.config.config?.options?.humanJitter ?? 0.25);
+        const variance = ms * f;
+        return Math.max(5000, ms - variance + Math.random() * variance * 2);
+    }
+
+    /** Async sleep with optional jitter */
+    humanSleep(ms, jitterFactor = 0) {
+        const delay = jitterFactor > 0 ? this.jitter(ms, jitterFactor) : ms;
+        return new Promise(r => setTimeout(r, delay));
+    }
+
+    /** Pick random int between min and max */
+    rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+    // ── Streaming presence ──────────────────────────────────────────
     async streaming() {
         const { setup, config } = this.config;
-        const applicationId = config.options?.botid || "1109522937989562409";
+        const opts = config.options || {};
 
-        let watchUrl = config.options["watch-url"]?.[this.index.url];
+        const humanMode = opts.humanMode !== false; // default ON
+        const applicationId = opts.botid || "1109522937989562409";
+
+        // ── Safe minimum delay ──────────────────────────────────────
+        // Never update faster than 30 s in human mode (avoids rate detection)
+        const configuredDelay = Math.max((setup?.delay || 30) * 1000, humanMode ? 30000 : 8000);
+
+        // ── Resolve streaming URL ───────────────────────────────────
+        const urlList = opts["watch-url"] || config["watch-url"] || [];
+        let watchUrl = urlList[this.index.url];
 
         if (!watchUrl || !this.getExternal.isValidURL(watchUrl)) {
-            console.warn("No valid streaming URL found. Skipping URL setting.");
+            console.log(`[!] No valid streaming URL — retry in 30s`);
+            setTimeout(() => this.streaming(), 30000);
             return;
         }
 
-        let platform = '';
-        if (watchUrl.includes("twitch.tv")) {
-            platform = 'Twitch';
-        } else if (watchUrl.includes("youtube.com") || watchUrl.includes("youtu.be")) {
-            platform = 'YouTube';
-        } else {
-            platform = 'Unknown';
-        }
+        // ── Platform detection ──────────────────────────────────────
+        let platform = 'Twitch';
+        if (watchUrl.includes("youtube.com") || watchUrl.includes("youtu.be")) platform = 'YouTube';
+        else if (watchUrl.includes("kick.com")) platform = 'Kick';
 
+        // ── Build RichPresence ──────────────────────────────────────
         const presence = new RichPresence(this)
             .setApplicationId(applicationId)
             .setType("STREAMING")
             .setURL(watchUrl)
             .setName(platform);
 
-        const text1 = config["text-1"]?.[this.index.text_1] || null;
-        presence.setDetails(this.SPT(text1));
+        const text1 = config["text-1"]?.[this.index.text_1] ?? null;
+        if (text1) presence.setDetails(this.SPT(text1));
 
-        const text2 = config["text-2"]?.[this.index.text_2] || null;
-        presence.setState(this.SPT(text2));
+        const text2 = config["text-2"]?.[this.index.text_2] ?? null;
+        if (text2) presence.setState(this.SPT(text2));
 
-        const text3 = config["text-3"]?.[this.index.text_3] || null;
-        presence.setAssetsLargeText(this.SPT(text3));
+        const text3 = config["text-3"]?.[this.index.text_3] ?? null;
+        if (text3) presence.setAssetsLargeText(this.SPT(text3));
 
         if (config["text-4"]?.length) {
             const text4 = config["text-4"][this.index.text_4];
-            presence.setAssetsSmallText(this.SPT(text4));
+            if (text4) presence.setAssetsSmallText(this.SPT(text4));
         }
 
+        // Images
         if (config.bigimg?.length || config.smallimg?.length) {
-            const bigImg = config.bigimg[this.index.bm];
-            const smallImg = config.smallimg[this.index.sm];
+            const bigImg  = config.bigimg?.[this.index.bm];
+            const smallImg = config.smallimg?.[this.index.sm];
             const images = await this.getImage(bigImg, smallImg);
-            presence.setAssetsLargeImage(images.bigImage);
-            presence.setAssetsSmallImage(images.smallImage);
+            if (images.bigImage)  presence.setAssetsLargeImage(images.bigImage);
+            if (images.smallImage) presence.setAssetsSmallImage(images.smallImage);
         }
 
-        if (config["button-1"]?.length) {
-            const button1 = config["button-1"][this.index.bt_1];
-            presence.addButton(this.SPT(button1.name), button1.url);
+        // Buttons — only add if both name and url are set
+        if (config["button-1"]?.[0]?.url) {
+            const b = config["button-1"][this.index.bt_1];
+            if (b?.name && b?.url) presence.addButton(this.SPT(b.name), b.url);
+        }
+        if (config["button-2"]?.[0]?.url) {
+            const b = config["button-2"][this.index.bt_2];
+            if (b?.name && b?.url) presence.addButton(this.SPT(b.name), b.url);
         }
 
-        if (config["button-2"]?.length) {
-            const button2 = config["button-2"][this.index.bt_2];
-            presence.addButton(this.SPT(button2.name), button2.url);
+        // ── Build activities array ──────────────────────────────────
+        const activities = [presence];
+
+        // Custom Status alongside streaming (if enabled)
+        if (config.customStatus?.enabled && config.customStatus?.text) {
+            try {
+                const cs = new CustomStatus(this);
+                cs.setState(this.SPT(config.customStatus.text));
+                if (config.customStatus.emoji) cs.setEmoji(config.customStatus.emoji);
+                activities.push(cs);
+            } catch (e) {
+                // CustomStatus not available in this build — skip silently
+            }
         }
 
-        const status = {
-            activities: [presence]
-        };
+        // ── Push presence ───────────────────────────────────────────
+        this.user?.setPresence({ status: 'online', activities });
+        this._lastPresenceTs = Date.now();
 
-        this.user?.setPresence(status);
-
-        setTimeout(() => this.streaming(), setup?.delay * 1000);
+        // Emit rotation counters for dashboard stats
+        console.log(`[ROT:text1]`);
+        if (this.lib.count % 2 === 0) console.log(`[ROT:text2]`);
+        if (this.lib.count % 4 === 0) console.log(`[ROT:images]`);
 
         this.lib.count++;
         this.lib.countParty++;
 
-        this.index.url = (this.index.url + 1) % config.options["watch-url"]?.length;
-        this.index.text_0 = (this.index.text_0 + 1) % config["text-1"]?.length;
-        this.index.text_1 = (this.index.text_1 + 1) % config["text-1"]?.length;
-        this.index.text_2 = (this.index.text_2 + 1) % config["text-2"]?.length;
-        this.index.text_3 = (this.index.text_3 + 1) % config["text-3"]?.length;
-        this.index.text_4 = (this.index.text_4 + 1) % config["text-4"]?.length;
-        this.index.bt_1 = (this.index.bt_1 + 1) % config["button-1"]?.length;
-        this.index.bt_2 = (this.index.bt_2 + 1) % config["button-2"]?.length;
-        this.index.bm = (this.index.bm + 1) % config.bigimg?.length;
-        this.index.sm = (this.index.sm + 1) % config.smallimg?.length;
+        // ── Advance rotation indices ────────────────────────────────
+        const adv = (cur, arr) => (arr?.length ? (cur + 1) % arr.length : 0);
+        this.index.url    = adv(this.index.url,    urlList);
+        this.index.text_0 = adv(this.index.text_0, config["text-1"]);
+        this.index.text_1 = adv(this.index.text_1, config["text-1"]);
+        this.index.text_2 = adv(this.index.text_2, config["text-2"]);
+        this.index.text_3 = adv(this.index.text_3, config["text-3"]);
+        this.index.text_4 = adv(this.index.text_4, config["text-4"]);
+        this.index.bt_1   = adv(this.index.bt_1,   config["button-1"]);
+        this.index.bt_2   = adv(this.index.bt_2,   config["button-2"]);
+        this.index.bm     = adv(this.index.bm,     config.bigimg);
+        this.index.sm     = adv(this.index.sm,     config.smallimg);
+
+        // ── Schedule next cycle ─────────────────────────────────────
+        const nextDelay = humanMode ? this.jitter(configuredDelay) : configuredDelay;
+
+        if (humanMode) {
+            // ── Occasional idle simulation ──────────────────────────
+            // Simulates a human stepping away from keyboard briefly
+            const idleChance = opts.idleChance ?? 0.04; // 4% per cycle
+            if (Math.random() < idleChance) {
+                const idleSec = this.rand(
+                    opts.idleMinSec ?? 60,
+                    opts.idleMaxSec ?? 240
+                );
+                console.log(`[Human] Going idle for ${idleSec}s — natural behavior simulation`);
+                setTimeout(async () => {
+                    try {
+                        await this.user?.setStatus('idle');
+                        await this.humanSleep(idleSec * 1000, 0.15);
+                        await this.user?.setStatus('online');
+                        await this.humanSleep(this.rand(3000, 8000));
+                    } catch {}
+                    this.streaming();
+                }, this.rand(2000, 6000));
+                return; // skip normal scheduling
+            }
+        }
+
+        setTimeout(() => this.streaming(), nextDelay);
     }
 
     startInterval(callback, interval) {
@@ -646,15 +747,46 @@ class ModClient extends Client {
 
     async start() {
         try {
+            const opts = this.config.config?.options || {};
+            const humanMode = opts.humanMode !== false;
+
             await this.weather.update();
             await this.sys.update();
+
+            // ── Human startup: login ────────────────────────────────
+            console.log(`[~] Connecting — ${this.maskToken(this.TOKEN)}`.cyan);
             await this.login(this.TOKEN);
 
-            const delay = this.targetTime - Date.now();
-            await new Promise(resolve => setTimeout(resolve, delay));
+            // ── Stagger delay (original multi-token spacing) ────────
+            const stagger = this.targetTime - Date.now();
+            if (stagger > 0) await this.humanSleep(stagger);
+
+            if (humanMode) {
+                // Simulate a human who just opened Discord — waits a bit,
+                // reads messages, then decides to go live
+                const openDelay = this.rand(6000, 18000); // 6–18 s
+                console.log(`[Human] Startup delay ${(openDelay/1000).toFixed(1)}s (simulating open)`.gray);
+                await this.humanSleep(openDelay);
+
+                // Set status to online naturally before streaming
+                await this.user?.setStatus('online');
+                await this.humanSleep(this.rand(3000, 8000)); // short pause
+
+                // Occasional initial idle peek (2% — very rare on startup)
+                if (Math.random() < 0.02) {
+                    const idlePeek = this.rand(15000, 45000);
+                    console.log(`[Human] Initial idle peek ${(idlePeek/1000).toFixed(0)}s`.gray);
+                    await this.user?.setStatus('idle');
+                    await this.humanSleep(idlePeek, 0.1);
+                    await this.user?.setStatus('online');
+                    await this.humanSleep(this.rand(2000, 6000));
+                }
+            }
 
             this.lib.timestamp = Date.now();
-            const updateInterval = 1000 * this.config.setup.delay;
+            const updateInterval = humanMode
+                ? this.jitter(1000 * this.config.setup.delay)
+                : 1000 * this.config.setup.delay;
 
             this.startInterval(() => this.sys.update(), updateInterval);
             await this.streaming();
