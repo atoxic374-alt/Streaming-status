@@ -248,6 +248,9 @@ async function loadSettings() {
   if ($('customStatusEmoji')) $('customStatusEmoji').value = cs.emoji || '';
   if ($('timestampMode')) $('timestampMode').value = opts.timestamp || '{start}';
 
+  // Application ID
+  if ($('botId')) $('botId').value = opts.botid || '';
+
   // Human simulation settings
   const humanOn = opts.humanMode !== false;
   const jitterPct = Math.round((opts.humanJitter ?? 0.25) * 100);
@@ -405,6 +408,9 @@ async function savePresence() {
     emoji: $('customStatusEmoji')?.value.trim() || '',
   };
 
+  // Application ID
+  cfg.config.options.botid = $('botId')?.value.trim() || '';
+
   // Human simulation / anti-detection
   cfg.config.options.humanMode    = $('humanModeEnabled')?.checked !== false;
   cfg.config.options.humanJitter  = (Number($('humanJitter')?.value) || 25) / 100;
@@ -415,6 +421,90 @@ async function savePresence() {
   const r = await post(API.settings, { config: cfg, tokens: S.rawTokens });
   if (r.ok) { toast('Settings saved!', 'success'); S.settings.config = cfg; }
   else toast('Save failed: ' + (r.error || 'unknown'), 'error');
+}
+
+// ── Discord Developer Portal — App auto-detect ──────────────────────
+async function detectApps() {
+  const btn      = $('detectAppBtn');
+  const listEl   = $('appsList');
+  const gridEl   = $('appsGrid');
+  const statusEl = $('appsStatus');
+
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin">⟳</span> Detecting…'; }
+  if (statusEl) statusEl.style.display = 'none';
+  if (listEl)   listEl.style.display   = 'none';
+
+  try {
+    const data = await get('/api/discord-apps');
+
+    if (data.error) {
+      showAppsStatus('⚠ ' + data.error, 'error');
+      return;
+    }
+
+    if (!data.apps?.length) {
+      showAppsStatus(
+        '🔍 No applications found in your Developer Portal. ' +
+        '<a href="https://discord.com/developers/applications" target="_blank" class="text-link" rel="noopener">Create one →</a>',
+        'warn'
+      );
+      return;
+    }
+
+    // Render app cards
+    if (gridEl) {
+      const current = $('botId')?.value.trim();
+      gridEl.innerHTML = data.apps.map(app => `
+        <div class="app-item${app.id === current ? ' selected' : ''}"
+             data-id="${app.id}"
+             onclick="selectApp('${app.id}','${app.name.replace(/['"]/g,'').slice(0,50)}')">
+          ${app.icon
+            ? `<img src="${app.icon}" class="app-icon" loading="lazy" onerror="this.style.display='none'">`
+            : `<div class="app-icon-placeholder">🎮</div>`}
+          <div class="app-info">
+            <div class="app-name">${app.name}</div>
+            <div class="app-id">${app.id}</div>
+          </div>
+          <div class="app-select-hint">Use</div>
+        </div>
+      `).join('');
+    }
+
+    if (listEl) listEl.style.display = '';
+
+    // Auto-select first if nothing configured yet
+    if (!$('botId')?.value.trim() && data.apps[0]) {
+      selectApp(data.apps[0].id, data.apps[0].name);
+    }
+  } catch (e) {
+    showAppsStatus('⚠ ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg> Auto-detect'; }
+  }
+}
+
+function showAppsStatus(html, type) {
+  const el = $('appsStatus');
+  if (!el) return;
+  el.innerHTML = html;
+  el.style.display = '';
+  el.style.borderColor = type === 'error' ? 'rgba(248,113,113,0.3)'
+                       : type === 'warn'  ? 'rgba(251,191,36,0.3)'
+                       : 'var(--border)';
+  el.style.background  = type === 'error' ? 'rgba(248,113,113,0.07)'
+                       : type === 'warn'  ? 'rgba(251,191,36,0.07)'
+                       : 'var(--bg-hover)';
+  el.style.color       = type === 'error' ? '#f87171'
+                       : type === 'warn'  ? '#fbbf24'
+                       : 'var(--text-dim)';
+}
+
+function selectApp(id, name) {
+  if ($('botId')) $('botId').value = id;
+  document.querySelectorAll('.app-item').forEach(el => {
+    el.classList.toggle('selected', el.dataset.id === id);
+  });
+  toast(`Application set: "${name}"`, 'success');
 }
 
 async function saveTokens() {
@@ -812,6 +902,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     S.rawTokens = tokens;
     goTo('tokens');
     renderTokenCards();
+  });
+
+  // Application ID — auto-detect & clear
+  $('detectAppBtn')?.addEventListener('click', detectApps);
+  $('clearAppBtn')?.addEventListener('click', () => {
+    if ($('botId')) $('botId').value = '';
+    if ($('appsList')) $('appsList').style.display = 'none';
+    if ($('appsStatus')) $('appsStatus').style.display = 'none';
+    document.querySelectorAll('.app-item').forEach(el => el.classList.remove('selected'));
+    toast('Application ID cleared — will auto-detect on start', 'info');
   });
 
   // Presence

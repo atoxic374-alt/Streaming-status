@@ -327,6 +327,41 @@
         </div>
       </div>
 
+      <!-- ── Application ID / Developer Portal ── -->
+      <div class="panel appid-panel" style="margin-top:0;margin-bottom:14px">
+        <div class="panel-header">
+          <div style="display:flex;align-items:center;gap:9px">
+            <span style="font-size:18px">🎮</span>
+            <h3>Application ID</h3>
+            <span class="badge" style="background:var(--primary-dim);color:var(--primary);font-size:10px;padding:2px 8px;border-radius:20px">Required</span>
+          </div>
+          <button class="btn btn-outline" id="detectAppBtn" style="font-size:12px;padding:5px 14px;gap:5px">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            Auto-detect
+          </button>
+        </div>
+        <p class="muted-text small" style="margin-bottom:12px">
+          Needed for Rich Presence. Create one at
+          <a href="https://discord.com/developers/applications" target="_blank" class="text-link" rel="noopener">discord.com/developers/applications</a> →
+          copy the <strong style="color:var(--text-dim)">Application ID</strong>.
+          Click <em>Auto-detect</em> to fetch it automatically from your account.
+        </p>
+        <div style="display:flex;gap:8px;align-items:flex-end">
+          <div style="flex:1">
+            <label class="field-label">Application ID</label>
+            <input class="input-field" id="botId" placeholder="Auto-fetched on start if empty…" style="font-family:monospace;letter-spacing:.5px"/>
+          </div>
+          <button class="btn btn-outline" id="clearAppBtn" style="font-size:12px;padding:8px 12px;flex-shrink:0" title="Clear">✕</button>
+        </div>
+
+        <!-- Apps list populated by detect -->
+        <div id="appsList" style="display:none;margin-top:12px">
+          <label class="field-label" style="margin-bottom:6px">Your Developer Portal apps — click to use:</label>
+          <div id="appsGrid" class="apps-grid"></div>
+        </div>
+        <div id="appsStatus" style="display:none;margin-top:8px;font-size:12px;padding:8px 10px;border-radius:8px;border:1px solid var(--border)"></div>
+      </div>
+
       <!-- ── Human Mode Protection ── -->
       <div class="panel" style="margin-top:16px; border:1px solid rgba(99,102,241,0.3); background:linear-gradient(135deg,rgba(99,102,241,0.06) 0%,rgba(139,92,246,0.04) 100%)">
         <div class="panel-header">

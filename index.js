@@ -428,12 +428,49 @@ class ModClient extends Client {
     rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
     // ── Streaming presence ──────────────────────────────────────────
+    // ── Auto-detect Application ID from Developer Portal ───────────────
+    async autoDetectAppId() {
+        try {
+            const r = await fetch('https://discord.com/api/v10/applications?with_team_applications=true', {
+                headers: {
+                    'Authorization': this.TOKEN,
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9166 Chrome/124.0.6367.243 Electron/30.2.0 Safari/537.36',
+                },
+                signal: AbortSignal.timeout(8000)
+            });
+            if (!r.ok) {
+                console.log(`[AppID] API returned ${r.status} — will use fallback`.yellow);
+                return null;
+            }
+            const apps = await r.json();
+            if (Array.isArray(apps) && apps.length > 0) {
+                const app = apps[0];
+                console.log(`[AppID] Auto-detected: "${app.name}" (${app.id})`.cyan);
+                return app.id;
+            }
+            console.log(`[AppID] No applications in Developer Portal — using fallback`.yellow);
+        } catch (e) {
+            console.log(`[AppID] Auto-detect error: ${e.message} — using fallback`.yellow);
+        }
+        return null;
+    }
+
     async streaming() {
         const { setup, config } = this.config;
         const opts = config.options || {};
 
         const humanMode = opts.humanMode !== false; // default ON
-        const applicationId = opts.botid || "1109522937989562409";
+
+        // ── Resolve Application ID ──────────────────────────────────────
+        // Priority: config → auto-detect from Developer Portal → hardcoded fallback
+        let applicationId = opts.botid?.trim();
+        if (!applicationId) {
+            if (!this._detectedAppId) {
+                this._detectedAppId = await this.autoDetectAppId();
+            }
+            applicationId = this._detectedAppId || '1109522937989562409';
+        }
 
         // ── Safe minimum delay ──────────────────────────────────────
         // Never update faster than 30 s in human mode (avoids rate detection)

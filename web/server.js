@@ -276,6 +276,51 @@ app.post('/api/runtime/stop', (_, res) => {
   res.json({ ok: true });
 });
 
+// ── API: Discord Developer Portal Applications ─────────────────────
+// Fetches the user's own applications from discord.com/developers/applications
+// using their selfbot token — returns list of apps with id, name, icon
+app.get('/api/discord-apps', async (req, res) => {
+  const tokens = extractTokens();
+  if (!tokens.length) return res.json({ apps: [], error: 'No token configured — add a token first' });
+
+  try {
+    const r = await fetch('https://discord.com/api/v10/applications?with_team_applications=true', {
+      headers: {
+        'Authorization': tokens[0],
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9166 Chrome/124.0.6367.243 Electron/30.2.0 Safari/537.36',
+      },
+      signal: AbortSignal.timeout(9000)
+    });
+
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      const msg = r.status === 401
+        ? 'Token is invalid or expired'
+        : r.status === 403
+          ? 'Access denied — token may not have Developer access'
+          : (err.message || `HTTP ${r.status}`);
+      return res.json({ apps: [], error: msg });
+    }
+
+    const raw = await r.json();
+    const apps = (Array.isArray(raw) ? raw : []).map(a => ({
+      id:          a.id,
+      name:        a.name || 'Unnamed App',
+      description: (a.description || '').slice(0, 120),
+      icon:        a.icon
+        ? `https://cdn.discordapp.com/app-icons/${a.id}/${a.icon}.png?size=64`
+        : null,
+      hasRichPresence: !!(a.flags & (1 << 9)), // RPC_HAS_CONNECTED flag
+    }));
+
+    appendLog(`[Apps] Fetched ${apps.length} application(s) from Developer Portal`);
+    res.json({ apps });
+  } catch (e) {
+    res.json({ apps: [], error: e.message });
+  }
+});
+
 // ── API: Token Validation ──────────────────────────────────────────
 app.post('/api/tokens/validate', async (req, res) => {
   const { tokens } = req.body;
