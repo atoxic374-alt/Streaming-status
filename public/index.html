@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Streaming Control Center</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="orbs" aria-hidden="true"></div>
+  <header class="topbar">
+    <div>
+      <h1 id="title">Streaming Control Center</h1>
+      <p id="subtitle">Complete streaming control and real runtime monitor.</p>
+    </div>
+    <div class="top-actions">
+      <button id="langBtn" class="btn btn-soft">AR</button>
+      <button id="saveBtn" class="btn btn-primary">Save Settings</button>
+    </div>
+  </header>
+
+  <main class="app-grid">
+    <section class="panel">
+      <h2 class="section-title">Account Connections</h2>
+      <textarea id="tokens" rows="6" placeholder="token_1\ntoken_2"></textarea>
+      <div class="two-col">
+        <div><label>City</label><input id="city" type="text" /></div>
+        <div><label>Delay seconds</label><input id="delay" type="number" min="5" max="120" /></div>
+      </div>
+
+      <h2 class="section-title">Streaming Identity</h2>
+      <h2 class="section-title">Theme Customization</h2>
+      <div class="two-col">
+        <div><label>Primary Color</label><input id="primaryColor" type="color" value="#79b8ff" /></div>
+        <div><label>Background Color</label><input id="bgColor" type="color" value="#0b1220" /></div>
+      </div>
+      <label>Animation Speed (seconds)</label><input id="orbSpeed" type="number" min="6" max="30" value="14" />
+      <label>Watch URLs</label>
+      <textarea id="watchUrls" rows="3" placeholder="https://twitch.tv/...\nhttps://youtube.com/watch?v=..."></textarea>
+      <label>Big Images</label>
+      <textarea id="bigimg" rows="3"></textarea>
+      <label>Small Images</label>
+      <textarea id="smallimg" rows="2"></textarea>
+
+      <h2 class="section-title">Presence Text Rotation</h2>
+      <textarea id="text1" rows="3"></textarea>
+      <textarea id="text2" rows="4"></textarea>
+      <textarea id="text3" rows="3"></textarea>
+
+      <h2 class="section-title">Action Buttons</h2>
+      <div class="two-col">
+        <input id="btn1Name" placeholder="Primary label" />
+        <input id="btn1Url" placeholder="Primary URL" />
+        <input id="btn2Name" placeholder="Secondary label" />
+        <input id="btn2Url" placeholder="Secondary URL" />
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2 class="section-title">Runtime Controller</h2>
+      <div class="runtime-actions">
+        <button id="startBtn" class="btn btn-primary">Start Real Script</button>
+        <button id="stopBtn" class="btn btn-soft">Stop Script</button>
+      </div>
+      <div class="metrics">
+        <div class="metric"><span>Running</span><strong id="runState">No</strong></div>
+        <div class="metric"><span>PID</span><strong id="runPid">-</strong></div>
+        <div class="metric"><span>Tokens</span><strong id="runTokens">0</strong></div>
+        <div class="metric"><span>Cookie Auth</span><strong id="runCookie">No</strong></div>
+      </div>
+
+      <h2 class="section-title">Live Presence Preview</h2>
+      <div class="preview-card">
+        <h3 id="pv1" contenteditable="true"></h3>
+        <p id="pv2" contenteditable="true"></p>
+        <p id="pv3" class="muted" contenteditable="true"></p>
+        <div class="actions">
+          <button id="pvBtn1" class="btn btn-soft" contenteditable="true"></button>
+          <button id="pvBtn2" class="btn btn-soft" contenteditable="true"></button>
+        </div>
+      </div>
+
+      <h3 class="section-title">Runtime Logs</h3>
+      <div id="log" class="log"></div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
