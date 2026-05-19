@@ -1,6 +1,7 @@
 // เอาไปแจกต่อให้เครดิตด้วย | By 4levy ใครเปลี่ยนขอให้ไม่เจอดี
+require('dotenv').config();
 
-const { Client, RichPresence, Options } = require("discord.js-selfbot-v13");
+const { Client, RichPresence, CustomStatus, SpotifyRPC, Options } = require("discord.js-selfbot-v13");
 const moment = require("moment-timezone");
 const { schedule } = require("node-cron");
 const os = require("os");
@@ -84,7 +85,7 @@ class Weather {
     async update() {
         try {
             const params = new URLSearchParams();
-            params.append("key", "1e1a0f498dbf472cb3991045241608");
+            params.append("key", process.env.WEATHER_API_KEY || "1e1a0f498dbf472cb3991045241608");
             params.append('q', encodeURIComponent(this.location));
             params.append("aqi", "yes");
 

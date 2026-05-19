@@ -1,89 +1,537 @@
 <!doctype html>
-<html lang="en" dir="ltr">
+<html lang="en" data-theme="dark">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Streaming Control Center</title>
-  <link rel="stylesheet" href="styles.css" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>StreamDash — Streaming Control Center</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="styles.css"/>
 </head>
 <body>
-  <div class="orbs" aria-hidden="true"></div>
-  <header class="topbar">
+<div class="ambient" aria-hidden="true"><div class="orb orb-1"></div><div class="orb orb-2"></div><div class="orb orb-3"></div></div>
+
+<!-- ── Sidebar ── -->
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-icon">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+    </div>
     <div>
-      <h1 id="title">Streaming Control Center</h1>
-      <p id="subtitle">Complete streaming control and real runtime monitor.</p>
+      <div class="brand-name">StreamDash</div>
+      <div class="brand-sub">v3.0</div>
     </div>
-    <div class="top-actions">
-      <button id="langBtn" class="btn btn-soft">AR</button>
-      <button id="saveBtn" class="btn btn-primary">Save Settings</button>
+  </div>
+
+  <ul class="nav-list">
+    <li class="nav-item active" data-section="overview">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      <span>Overview</span>
+    </li>
+    <li class="nav-item" data-section="tokens">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+      <span>Tokens</span>
+      <span class="nav-badge" id="navTokenBadge"></span>
+    </li>
+    <li class="nav-item" data-section="presence">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.07 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3 1.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.44a16 16 0 0 0 5.65 5.65l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 15z"/></svg>
+      <span>Presence</span>
+    </li>
+    <li class="nav-item" data-section="profiles">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <span>Profiles</span>
+      <span class="nav-badge" id="navProfileBadge"></span>
+    </li>
+    <li class="nav-item" data-section="schedule">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <span>Schedule</span>
+      <span class="nav-badge nav-badge-dot" id="navSchedBadge" style="display:none"></span>
+    </li>
+    <li class="nav-item" data-section="analytics">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      <span>Analytics</span>
+    </li>
+    <li class="nav-item" data-section="settings">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <span>Settings</span>
+    </li>
+  </ul>
+
+  <div class="sidebar-footer">
+    <div class="status-pill" id="statusPill">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Stopped</span>
     </div>
-  </header>
+    <button class="icon-btn" id="themeBtn" title="Toggle theme">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+    </button>
+  </div>
+</nav>
 
-  <main class="app-grid">
-    <section class="panel">
-      <h2 class="section-title">Account Connections</h2>
-      <textarea id="tokens" rows="6" placeholder="token_1\ntoken_2"></textarea>
-      <div class="two-col">
-        <div><label>City</label><input id="city" type="text" /></div>
-        <div><label>Delay seconds</label><input id="delay" type="number" min="5" max="120" /></div>
+<!-- ── Mobile topbar ── -->
+<header class="mobile-header">
+  <button class="icon-btn" id="menuBtn">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </button>
+  <span class="brand-name">StreamDash</span>
+  <div class="status-dot" id="mobileStatusDot"></div>
+</header>
+
+<!-- ── Main ── -->
+<main class="main" id="main">
+
+  <!-- ── OVERVIEW ── -->
+  <section class="section active" id="section-overview">
+    <div class="section-header">
+      <div><h1 class="section-title">Overview</h1><p class="section-desc">Real-time dashboard and quick controls</p></div>
+      <div class="header-actions">
+        <button class="btn btn-success" id="startBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Start
+        </button>
+        <button class="btn btn-danger" id="stopBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Stop
+        </button>
       </div>
+    </div>
 
-      <h2 class="section-title">Streaming Identity</h2>
-      <h2 class="section-title">Theme Customization</h2>
-      <div class="two-col">
-        <div><label>Primary Color</label><input id="primaryColor" type="color" value="#79b8ff" /></div>
-        <div><label>Background Color</label><input id="bgColor" type="color" value="#0b1220" /></div>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+        <div class="stat-info"><div class="stat-val" id="ovUptime">00:00:00</div><div class="stat-label">Session Uptime</div></div>
       </div>
-      <label>Animation Speed (seconds)</label><input id="orbSpeed" type="number" min="6" max="30" value="14" />
-      <label>Watch URLs</label>
-      <textarea id="watchUrls" rows="3" placeholder="https://twitch.tv/...\nhttps://youtube.com/watch?v=..."></textarea>
-      <label>Big Images</label>
-      <textarea id="bigimg" rows="3"></textarea>
-      <label>Small Images</label>
-      <textarea id="smallimg" rows="2"></textarea>
-
-      <h2 class="section-title">Presence Text Rotation</h2>
-      <textarea id="text1" rows="3"></textarea>
-      <textarea id="text2" rows="4"></textarea>
-      <textarea id="text3" rows="3"></textarea>
-
-      <h2 class="section-title">Action Buttons</h2>
-      <div class="two-col">
-        <input id="btn1Name" placeholder="Primary label" />
-        <input id="btn1Url" placeholder="Primary URL" />
-        <input id="btn2Name" placeholder="Secondary label" />
-        <input id="btn2Url" placeholder="Secondary URL" />
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-purple"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg></div>
+        <div class="stat-info"><div class="stat-val" id="ovTokens">0</div><div class="stat-label">Tokens Active</div></div>
       </div>
-    </section>
-
-    <section class="panel">
-      <h2 class="section-title">Runtime Controller</h2>
-      <div class="runtime-actions">
-        <button id="startBtn" class="btn btn-primary">Start Real Script</button>
-        <button id="stopBtn" class="btn btn-soft">Stop Script</button>
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></div>
+        <div class="stat-info"><div class="stat-val" id="ovRotations">0</div><div class="stat-label">Total Rotations</div></div>
       </div>
-      <div class="metrics">
-        <div class="metric"><span>Running</span><strong id="runState">No</strong></div>
-        <div class="metric"><span>PID</span><strong id="runPid">-</strong></div>
-        <div class="metric"><span>Tokens</span><strong id="runTokens">0</strong></div>
-        <div class="metric"><span>Cookie Auth</span><strong id="runCookie">No</strong></div>
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-orange"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+        <div class="stat-info"><div class="stat-val" id="ovPid">—</div><div class="stat-label">Process ID</div></div>
       </div>
+    </div>
 
-      <h2 class="section-title">Live Presence Preview</h2>
-      <div class="preview-card">
-        <h3 id="pv1" contenteditable="true"></h3>
-        <p id="pv2" contenteditable="true"></p>
-        <p id="pv3" class="muted" contenteditable="true"></p>
-        <div class="actions">
-          <button id="pvBtn1" class="btn btn-soft" contenteditable="true"></button>
-          <button id="pvBtn2" class="btn btn-soft" contenteditable="true"></button>
+    <div class="two-panel">
+      <div class="panel">
+        <div class="panel-header"><h3>System Resources</h3><span class="live-badge">LIVE</span></div>
+        <div class="resource-row">
+          <div class="resource-label"><span>CPU</span><span id="cpuVal">0%</span></div>
+          <div class="progress-track"><div class="progress-fill progress-blue" id="cpuBar" style="width:0%"></div></div>
+        </div>
+        <div class="resource-row">
+          <div class="resource-label"><span>RAM</span><span id="ramVal">0%</span></div>
+          <div class="progress-track"><div class="progress-fill progress-purple" id="ramBar" style="width:0%"></div></div>
+        </div>
+        <div class="resource-detail" id="ramDetail">— GB / — GB</div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h3>Streaming Preview</h3><div id="previewBadge" class="badge badge-streaming" style="display:none">🟣 LIVE</div></div>
+        <div class="discord-card" id="discordCard">
+          <div class="dc-header">
+            <div class="dc-stream-badge">STREAMING</div>
+          </div>
+          <div class="dc-body">
+            <div class="dc-text dc-text-1" id="pvText1">—</div>
+            <div class="dc-text dc-text-2" id="pvText2">—</div>
+            <div class="dc-text dc-text-3 muted" id="pvText3">—</div>
+          </div>
+          <div class="dc-buttons">
+            <button class="dc-btn" id="pvBtn1">—</button>
+            <button class="dc-btn" id="pvBtn2">—</button>
+          </div>
         </div>
       </div>
+    </div>
 
-      <h3 class="section-title">Runtime Logs</h3>
-      <div id="log" class="log"></div>
-    </section>
-  </main>
-  <script src="app.js"></script>
+    <div class="panel">
+      <div class="panel-header">
+        <h3>Live Logs</h3>
+        <div class="panel-actions">
+          <span class="badge" id="logCount">0 entries</span>
+          <button class="text-btn" id="clearLogsBtn">Clear</button>
+        </div>
+      </div>
+      <div class="log-box" id="overviewLog"></div>
+    </div>
+  </section>
+
+  <!-- ── TOKENS ── -->
+  <section class="section" id="section-tokens">
+    <div class="section-header">
+      <div><h1 class="section-title">Token Manager</h1><p class="section-desc">Manage and validate your Discord tokens</p></div>
+      <button class="btn btn-primary" id="validateAllBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Validate All
+      </button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><h3>Add Tokens</h3><span class="muted-text">One token per line</span></div>
+      <textarea id="tokenInput" class="input-field" rows="5" placeholder="Paste your Discord token(s) here, one per line...&#10;&#10;Token_1&#10;Token_2"></textarea>
+      <div class="row-actions">
+        <button class="btn btn-primary" id="saveTokensBtn">Save Tokens</button>
+        <button class="btn btn-outline" id="testNewTokensBtn">Test & Validate</button>
+      </div>
+    </div>
+
+    <div id="tokenCards" class="token-grid"></div>
+  </section>
+
+  <!-- ── PRESENCE ── -->
+  <section class="section" id="section-presence">
+    <div class="section-header">
+      <div><h1 class="section-title">Presence Config</h1><p class="section-desc">Configure your streaming rich presence</p></div>
+      <button class="btn btn-primary" id="savePresenceBtn">Save Settings</button>
+    </div>
+
+    <div class="tab-bar">
+      <button class="tab active" data-tab="basic">Basic</button>
+      <button class="tab" data-tab="advanced">Advanced</button>
+      <button class="tab" data-tab="presets">Presets</button>
+    </div>
+
+    <div class="tab-content active" id="tab-basic">
+      <div class="two-panel">
+        <div class="panel">
+          <div class="panel-header"><h3>Configuration</h3></div>
+          <label class="field-label">Watch URLs <span class="muted-text">(Twitch / YouTube — one per line)</span></label>
+          <textarea class="input-field var-field" id="watchUrls" rows="3" placeholder="https://twitch.tv/channel&#10;https://youtube.com/watch?v=..."></textarea>
+
+          <label class="field-label">Text Line 1 (Details)</label>
+          <textarea class="input-field var-field" id="text1" rows="3" placeholder="{hour:1}:{min:1} • {city} {temp:c}°C"></textarea>
+
+          <label class="field-label">Text Line 2 (State)</label>
+          <textarea class="input-field var-field" id="text2" rows="4" placeholder="Multiple lines rotate automatically..."></textarea>
+
+          <label class="field-label">Text Line 3 (Large Image Text)</label>
+          <textarea class="input-field var-field" id="text3" rows="2" placeholder="Footer text here..."></textarea>
+
+          <div class="two-col">
+            <div>
+              <label class="field-label">City (Weather)</label>
+              <input class="input-field" id="city" type="text" placeholder="Tokyo"/>
+            </div>
+            <div>
+              <label class="field-label">Rotation Delay (sec)</label>
+              <input class="input-field" id="delay" type="number" min="5" max="120" value="10"/>
+            </div>
+          </div>
+
+          <label class="field-label">Big Images (URLs, one per line)</label>
+          <textarea class="input-field" id="bigimg" rows="3" placeholder="https://i.imgur.com/..."></textarea>
+
+          <label class="field-label">Small Images (URLs, one per line)</label>
+          <textarea class="input-field" id="smallimg" rows="2" placeholder="https://i.imgur.com/..."></textarea>
+
+          <label class="field-label">Button 1</label>
+          <div class="two-col">
+            <input class="input-field" id="btn1Name" placeholder="Label"/>
+            <input class="input-field" id="btn1Url" placeholder="https://..."/>
+          </div>
+          <label class="field-label">Button 2</label>
+          <div class="two-col">
+            <input class="input-field" id="btn2Name" placeholder="Label"/>
+            <input class="input-field" id="btn2Url" placeholder="https://..."/>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><h3>Live Preview</h3><div class="badge badge-streaming">Discord Card</div></div>
+          <div class="discord-card preview-full">
+            <div class="dc-header"><div class="dc-stream-badge">STREAMING</div></div>
+            <div class="dc-body">
+              <div class="dc-text dc-text-1" id="pvText1b" contenteditable="true">—</div>
+              <div class="dc-text dc-text-2" id="pvText2b" contenteditable="true">—</div>
+              <div class="dc-text dc-text-3 muted" id="pvText3b" contenteditable="true">—</div>
+            </div>
+            <div class="dc-buttons">
+              <button class="dc-btn" id="pvBtn1b" contenteditable="true">Button 1</button>
+              <button class="dc-btn" id="pvBtn2b" contenteditable="true">Button 2</button>
+            </div>
+          </div>
+          <div class="var-ref panel" style="margin-top:12px">
+            <div class="panel-header"><h4>Variable Reference</h4></div>
+            <div class="var-chips">
+              <span class="var-chip var-time">{hour:1}</span><span class="var-chip var-time">{min:1}</span>
+              <span class="var-chip var-weather">{city}</span><span class="var-chip var-weather">{temp:c}</span>
+              <span class="var-chip var-weather">{humidity}</span><span class="var-chip var-weather">{wind:kph}</span>
+              <span class="var-chip var-sys">{cpu:usage}</span><span class="var-chip var-sys">{ram:usage}</span>
+              <span class="var-chip var-sys">{uptime:hours}</span><span class="var-chip var-sys">{ping}</span>
+              <span class="var-chip var-font">{NF3(text)}</span><span class="var-chip var-font">{NF5(text)}</span>
+              <span class="var-chip var-special">{emoji:time}</span><span class="var-chip var-special">{emoji:clock}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-content" id="tab-advanced">
+      <div class="two-panel">
+        <div class="panel">
+          <div class="panel-header"><h3>Spotify RPC Mode</h3><label class="toggle-label"><input type="checkbox" id="spotifyEnabled" class="toggle-input"/><span class="toggle-track"></span></label></div>
+          <p class="muted-text small">Make it look like you're listening to Spotify alongside streaming.</p>
+          <label class="field-label">Song Name</label>
+          <input class="input-field" id="spotifySong" placeholder="Song title here..."/>
+          <label class="field-label">Artist</label>
+          <input class="input-field" id="spotifyArtist" placeholder="Artist name..."/>
+          <label class="field-label">Album</label>
+          <input class="input-field" id="spotifyAlbum" placeholder="Album name..."/>
+          <label class="field-label">Duration (seconds)</label>
+          <input class="input-field" id="spotifyDuration" type="number" value="210" min="10"/>
+          <label class="field-label">Album Art URL</label>
+          <input class="input-field" id="spotifyArt" placeholder="https://i.scdn.co/..."/>
+        </div>
+        <div class="panel">
+          <div class="panel-header"><h3>Custom Status</h3><label class="toggle-label"><input type="checkbox" id="customStatusEnabled" class="toggle-input"/><span class="toggle-track"></span></label></div>
+          <p class="muted-text small">Show a custom status text below your name alongside the streaming activity.</p>
+          <label class="field-label">Status Text</label>
+          <input class="input-field" id="customStatusText" placeholder="🎧 vibing while streaming..."/>
+          <label class="field-label">Emoji (Unicode)</label>
+          <input class="input-field" id="customStatusEmoji" placeholder="🎮"/>
+
+          <div class="panel" style="margin-top:16px; background: var(--bg-card)">
+            <div class="panel-header"><h4>Timestamp Mode</h4></div>
+            <select class="input-field" id="timestampMode">
+              <option value="{start}">Start Time (elapsed)</option>
+              <option value="{end}">End Time (countdown)</option>
+              <option value="">No timestamp</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-content" id="tab-presets">
+      <div class="panel-header" style="margin-bottom:12px"><h3>Preset Library</h3><span class="muted-text">Click to load a preset</span></div>
+      <div class="presets-grid" id="presetsGrid"></div>
+    </div>
+  </section>
+
+  <!-- ── PROFILES ── -->
+  <section class="section" id="section-profiles">
+    <div class="section-header">
+      <div><h1 class="section-title">Profiles</h1><p class="section-desc">Save and load complete configurations</p></div>
+      <button class="btn btn-primary" id="saveProfileBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        Save Current
+      </button>
+    </div>
+
+    <div class="panel" id="saveProfilePanel" style="display:none">
+      <div class="panel-header"><h3>New Profile Name</h3></div>
+      <div class="two-col" style="align-items:end">
+        <input class="input-field" id="profileNameInput" placeholder="My Custom Profile..."/>
+        <button class="btn btn-success" id="confirmSaveProfile">Save</button>
+      </div>
+    </div>
+
+    <div id="profilesGrid" class="profiles-grid">
+      <div class="empty-state" id="profilesEmpty">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <p>No profiles saved yet</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── SCHEDULE ── -->
+  <section class="section" id="section-schedule">
+    <div class="section-header">
+      <div><h1 class="section-title">Schedule</h1><p class="section-desc">Auto-start and stop at specific times</p></div>
+      <label class="toggle-label" style="align-self:center">
+        <input type="checkbox" id="schedEnabled" class="toggle-input"/>
+        <span class="toggle-track"></span>
+        <span style="margin-left:8px; font-size:13px; color:var(--text-dim)">Enabled</span>
+      </label>
+    </div>
+
+    <div class="two-panel">
+      <div class="panel">
+        <div class="panel-header"><h3>Time Settings</h3></div>
+        <div class="two-col">
+          <div>
+            <label class="field-label">
+              <span class="badge badge-success" style="font-size:10px">START</span> Auto-start at
+            </label>
+            <input class="input-field" type="time" id="schedStart" value="20:00"/>
+          </div>
+          <div>
+            <label class="field-label">
+              <span class="badge badge-danger" style="font-size:10px">STOP</span> Auto-stop at
+            </label>
+            <input class="input-field" type="time" id="schedStop" value="00:00"/>
+          </div>
+        </div>
+        <label class="field-label" style="margin-top:16px">Active Days</label>
+        <div class="days-grid" id="daysGrid">
+          <button class="day-btn active" data-day="0">Sun</button>
+          <button class="day-btn active" data-day="1">Mon</button>
+          <button class="day-btn active" data-day="2">Tue</button>
+          <button class="day-btn active" data-day="3">Wed</button>
+          <button class="day-btn active" data-day="4">Thu</button>
+          <button class="day-btn active" data-day="5">Fri</button>
+          <button class="day-btn active" data-day="6">Sat</button>
+        </div>
+        <button class="btn btn-primary" id="saveScheduleBtn" style="margin-top:20px; width:100%">Save Schedule</button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h3>Next Actions</h3></div>
+        <div id="schedInfo" class="sched-info">
+          <div class="sched-item">
+            <div class="sched-icon sched-start">▶</div>
+            <div><div class="sched-label">Next Start</div><div class="sched-time" id="nextStart">—</div></div>
+          </div>
+          <div class="sched-item">
+            <div class="sched-icon sched-stop">■</div>
+            <div><div class="sched-label">Next Stop</div><div class="sched-time" id="nextStop">—</div></div>
+          </div>
+        </div>
+        <div class="sched-note">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          Schedule checks every 30 seconds. Bot must be running for stop to work.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── ANALYTICS ── -->
+  <section class="section" id="section-analytics">
+    <div class="section-header">
+      <div><h1 class="section-title">Analytics</h1><p class="section-desc">Performance insights and runtime statistics</p></div>
+      <span class="live-badge">AUTO-REFRESH</span>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+        <div class="stat-info"><div class="stat-val" id="anTotalUptime">0h</div><div class="stat-label">Total Uptime</div></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+        <div class="stat-info"><div class="stat-val" id="anSessions">0</div><div class="stat-label">Total Sessions</div></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-orange"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></div>
+        <div class="stat-info"><div class="stat-val" id="anText2Rot">0</div><div class="stat-label">Text Rotations</div></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon stat-icon-red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div class="stat-info"><div class="stat-val" id="anErrors">0</div><div class="stat-label">Error Logs</div></div>
+      </div>
+    </div>
+
+    <div class="two-panel">
+      <div class="panel">
+        <div class="panel-header"><h3>Live System</h3><span class="live-badge">LIVE</span></div>
+        <div class="resource-row">
+          <div class="resource-label"><span>CPU Usage</span><span id="anCpu">0%</span></div>
+          <div class="progress-track"><div class="progress-fill progress-blue" id="anCpuBar" style="width:0%"></div></div>
+        </div>
+        <div class="resource-row">
+          <div class="resource-label"><span>RAM Usage</span><span id="anRam">0%</span></div>
+          <div class="progress-track"><div class="progress-fill progress-purple" id="anRamBar" style="width:0%"></div></div>
+        </div>
+        <div class="resource-detail" id="anRamDetail">— GB / — GB</div>
+        <div class="resource-row" style="margin-top:12px">
+          <div class="resource-label"><span>Text-1 Rotations</span><span id="anT1">0</span></div>
+          <div class="progress-track"><div class="progress-fill progress-green" id="anT1Bar" style="width:0%"></div></div>
+        </div>
+        <div class="resource-row">
+          <div class="resource-label"><span>Text-2 Rotations</span><span id="anT2">0</span></div>
+          <div class="progress-track"><div class="progress-fill progress-orange" id="anT2Bar" style="width:0%"></div></div>
+        </div>
+        <div class="resource-row">
+          <div class="resource-label"><span>Image Rotations</span><span id="anImg">0</span></div>
+          <div class="progress-track"><div class="progress-fill progress-pink" id="anImgBar" style="width:0%"></div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h3>Session History</h3><button class="text-btn" id="refreshStatsBtn">Refresh</button></div>
+        <div id="sessionHistory" class="session-list"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h3>Error Logs</h3>
+        <div class="panel-actions">
+          <span class="badge badge-danger" id="errCount">0</span>
+          <button class="text-btn" id="clearErrBtn">Clear</button>
+        </div>
+      </div>
+      <div class="log-box log-error" id="errorLog"></div>
+    </div>
+  </section>
+
+  <!-- ── SETTINGS ── -->
+  <section class="section" id="section-settings">
+    <div class="section-header">
+      <div><h1 class="section-title">Settings</h1><p class="section-desc">Configure integrations and preferences</p></div>
+    </div>
+
+    <div class="two-panel">
+      <div class="panel">
+        <div class="panel-header"><h3>Discord Webhook</h3></div>
+        <p class="muted-text small">Get notified in Discord when the bot starts, stops, or crashes.</p>
+        <label class="field-label">Webhook URL</label>
+        <input class="input-field" type="url" id="webhookUrl" placeholder="https://discord.com/api/webhooks/..."/>
+        <div class="row-actions">
+          <button class="btn btn-primary" id="saveWebhookBtn">Save Webhook</button>
+          <button class="btn btn-outline" id="testWebhookBtn">Test Connection</button>
+        </div>
+
+        <div class="panel-header" style="margin-top:24px"><h3>Weather API Key</h3></div>
+        <p class="muted-text small">Used for weather variables like <code>{temp:c}</code> and <code>{humidity}</code>.</p>
+        <label class="field-label">API Key <a href="https://www.weatherapi.com" target="_blank" class="text-link">Get free key ↗</a></label>
+        <input class="input-field" type="password" id="weatherKey" placeholder="Your WeatherAPI key..."/>
+        <button class="btn btn-primary" id="saveWeatherBtn" style="margin-top:8px">Save API Key</button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h3>Appearance</h3></div>
+        <label class="field-label">Theme</label>
+        <div class="theme-picker">
+          <button class="theme-opt active" data-t="dark">🌑 Dark</button>
+          <button class="theme-opt" data-t="light">☀️ Light</button>
+        </div>
+
+        <label class="field-label" style="margin-top:20px">Language</label>
+        <div class="theme-picker">
+          <button class="theme-opt active" data-lang="en">🇺🇸 English</button>
+          <button class="theme-opt" data-lang="ar">🇸🇦 العربية</button>
+        </div>
+
+        <div class="panel-header" style="margin-top:24px"><h3>Data</h3></div>
+        <div class="row-actions">
+          <button class="btn btn-outline" id="exportBtn">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Export Config
+          </button>
+          <label class="btn btn-outline" style="cursor:pointer">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Import Config
+            <input type="file" id="importFile" accept=".json" style="display:none"/>
+          </label>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ── Toast ── -->
+<div id="toast" class="toast" aria-live="polite"></div>
+
+<!-- ── Mobile bottom nav ── -->
+<nav class="mobile-nav">
+  <button class="mnav-item active" data-section="overview"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
+  <button class="mnav-item" data-section="tokens"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg></button>
+  <button class="mnav-item" data-section="presence"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.07 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3 1.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.44a16 16 0 0 0 5.65 5.65l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 15z"/></svg></button>
+  <button class="mnav-item" data-section="analytics"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></button>
+  <button class="mnav-item" data-section="settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+</nav>
+
+<script src="app.js"></script>
 </body>
 </html>
