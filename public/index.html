@@ -300,6 +300,76 @@
           </div>
         </div>
       </div>
+
+      <!-- ── Human Mode Protection ── -->
+      <div class="panel" style="margin-top:16px; border:1px solid rgba(99,102,241,0.3); background:linear-gradient(135deg,rgba(99,102,241,0.06) 0%,rgba(139,92,246,0.04) 100%)">
+        <div class="panel-header">
+          <div style="display:flex;align-items:center;gap:10px">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <h3 style="color:var(--accent)">Human Simulation</h3>
+            <span class="badge badge-streaming" style="font-size:10px;padding:2px 7px">Anti-Detection</span>
+          </div>
+          <label class="toggle-label"><input type="checkbox" id="humanModeEnabled" class="toggle-input" checked/><span class="toggle-track"></span></label>
+        </div>
+        <p class="muted-text small" style="margin-bottom:16px">Mimics real human Discord behavior — randomized timings, natural idle transitions, and browser-like session to prevent token flagging.</p>
+
+        <div class="two-panel" style="gap:12px">
+          <div>
+            <label class="field-label" style="display:flex;align-items:center;gap:6px">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              Delay Jitter <span class="muted-text">(randomness %)</span>
+            </label>
+            <div style="display:flex;align-items:center;gap:10px">
+              <input type="range" id="humanJitter" min="5" max="50" value="25" class="range-input" style="flex:1"/>
+              <span id="humanJitterVal" style="min-width:38px;text-align:right;font-variant-numeric:tabular-nums;color:var(--accent);font-weight:600">25%</span>
+            </div>
+            <p class="muted-text" style="font-size:11px;margin-top:4px">Adds ±25% random variance to every rotation cycle so updates never happen at exact intervals.</p>
+          </div>
+          <div>
+            <label class="field-label" style="display:flex;align-items:center;gap:6px">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
+              Idle Simulation <span class="muted-text">(chance %)</span>
+            </label>
+            <div style="display:flex;align-items:center;gap:10px">
+              <input type="range" id="idleChance" min="0" max="15" value="4" class="range-input" style="flex:1"/>
+              <span id="idleChanceVal" style="min-width:38px;text-align:right;font-variant-numeric:tabular-nums;color:var(--accent);font-weight:600">4%</span>
+            </div>
+            <p class="muted-text" style="font-size:11px;margin-top:4px">Chance per cycle of simulating AFK — goes idle for 1–4 minutes then returns online naturally.</p>
+          </div>
+        </div>
+
+        <div class="two-col" style="margin-top:12px">
+          <div>
+            <label class="field-label">Min Idle Duration (sec)</label>
+            <input class="input-field" id="idleMinSec" type="number" value="60" min="30" max="300"/>
+          </div>
+          <div>
+            <label class="field-label">Max Idle Duration (sec)</label>
+            <input class="input-field" id="idleMaxSec" type="number" value="240" min="60" max="600"/>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:12px;background:rgba(0,0,0,0.2);padding:12px;border-radius:8px">
+          <div style="display:flex;gap:16px;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:7px;font-size:12px">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span class="muted-text">Browser-like WebSocket fingerprint</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:7px;font-size:12px">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span class="muted-text">Discord Client user-agent headers</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:7px;font-size:12px">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span class="muted-text">Minimum 30s between presence updates</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:7px;font-size:12px">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span class="muted-text">Randomized startup delay (6–18s)</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="tab-content" id="tab-presets">

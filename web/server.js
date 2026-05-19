@@ -232,6 +232,16 @@ function sanitizePayload(config, tokens) {
     const b = safe.config[k]?.[0] || { name:'', url:'' };
     safe.config[k] = [{ name: String(b.name||'').slice(0,64), url: String(b.url||'').slice(0,512) }];
   });
+  // Human simulation settings — preserve as-is (already validated by UI)
+  const ho = safe.config.options;
+  ho.humanMode   = ho.humanMode   !== false;
+  ho.humanJitter = Math.min(Math.max(Number(ho.humanJitter) || 0.25, 0.05), 0.5);
+  ho.idleChance  = Math.min(Math.max(Number(ho.idleChance)  || 0.04, 0),    0.15);
+  ho.idleMinSec  = Math.min(Math.max(Number(ho.idleMinSec)  || 60,   30),   300);
+  ho.idleMaxSec  = Math.min(Math.max(Number(ho.idleMaxSec)  || 240,  60),   600);
+  // Preserve spotify, customStatus
+  if (safe.config.spotify)      safe.config.spotify      = safe.config.spotify;
+  if (safe.config.customStatus) safe.config.customStatus = safe.config.customStatus;
   return { safe, cleanedTokens: tokens.map(t => String(t).trim()).filter(Boolean) };
 }
 

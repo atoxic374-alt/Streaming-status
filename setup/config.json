@@ -9,7 +9,12 @@
         "https://www.twitch.tv/4levy_z1",
         "https://www.youtube.com/watch?v=HuFZX0LB29g"
       ],
-      "timestamp": "{start}"
+      "timestamp": "{start}",
+      "humanMode": true,
+      "humanJitter": 0.25,
+      "idleChance": 0.04,
+      "idleMinSec": 60,
+      "idleMaxSec": 240
     },
     "text-1": [
       "{NF3( 〈 {emoji:time} {hour:1} : {min:1} 〉 ⭒ 〈 📆 {th=date} / {en=month:3} / {en=year:2} 〉 )}"

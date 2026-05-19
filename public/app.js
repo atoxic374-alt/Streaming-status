@@ -248,6 +248,18 @@ async function loadSettings() {
   if ($('customStatusEmoji')) $('customStatusEmoji').value = cs.emoji || '';
   if ($('timestampMode')) $('timestampMode').value = opts.timestamp || '{start}';
 
+  // Human simulation settings
+  const humanOn = opts.humanMode !== false;
+  const jitterPct = Math.round((opts.humanJitter ?? 0.25) * 100);
+  const idlePct   = Math.round((opts.idleChance  ?? 0.04) * 100);
+  if ($('humanModeEnabled')) $('humanModeEnabled').checked = humanOn;
+  if ($('humanJitter'))      { $('humanJitter').value = jitterPct; }
+  if ($('humanJitterVal'))   $('humanJitterVal').textContent = jitterPct + '%';
+  if ($('idleChance'))       { $('idleChance').value = idlePct; }
+  if ($('idleChanceVal'))    $('idleChanceVal').textContent = idlePct + '%';
+  if ($('idleMinSec'))       $('idleMinSec').value = opts.idleMinSec ?? 60;
+  if ($('idleMaxSec'))       $('idleMaxSec').value = opts.idleMaxSec ?? 240;
+
   // Status
   updateStatus(data.runtime || {});
   renderPreview();
@@ -392,6 +404,13 @@ async function savePresence() {
     text: $('customStatusText')?.value.trim() || '',
     emoji: $('customStatusEmoji')?.value.trim() || '',
   };
+
+  // Human simulation / anti-detection
+  cfg.config.options.humanMode    = $('humanModeEnabled')?.checked !== false;
+  cfg.config.options.humanJitter  = (Number($('humanJitter')?.value) || 25) / 100;
+  cfg.config.options.idleChance   = (Number($('idleChance')?.value) || 4) / 100;
+  cfg.config.options.idleMinSec   = Number($('idleMinSec')?.value) || 60;
+  cfg.config.options.idleMaxSec   = Number($('idleMaxSec')?.value) || 240;
 
   const r = await post(API.settings, { config: cfg, tokens: S.rawTokens });
   if (r.ok) { toast('Settings saved!', 'success'); S.settings.config = cfg; }
@@ -799,6 +818,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('savePresenceBtn')?.addEventListener('click', savePresence);
   ['text1','text2','text3','btn1Name','btn2Name','watchUrls'].forEach(id => {
     $(id)?.addEventListener('input', renderPreview);
+  });
+
+  // Human simulation sliders — live value display
+  $('humanJitter')?.addEventListener('input', function() {
+    if ($('humanJitterVal')) $('humanJitterVal').textContent = this.value + '%';
+  });
+  $('idleChance')?.addEventListener('input', function() {
+    if ($('idleChanceVal')) $('idleChanceVal').textContent = this.value + '%';
   });
 
   // Tabs

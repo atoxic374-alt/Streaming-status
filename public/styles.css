@@ -332,6 +332,12 @@ code{font-family:monospace;font-size:11px;background:var(--bg-input);padding:1px
 @keyframes spin{to{transform:rotate(360deg)}}
 .var-ref{margin-top:0}
 
+/* ── Range slider ── */
+.range-input{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:4px;background:var(--border-light);outline:none;cursor:pointer;transition:background .2s}
+.range-input::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;border-radius:50%;background:var(--accent);cursor:pointer;box-shadow:0 0 6px rgba(99,102,241,.4);transition:transform .15s,box-shadow .15s}
+.range-input::-webkit-slider-thumb:hover{transform:scale(1.2);box-shadow:0 0 10px rgba(99,102,241,.6)}
+.range-input::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--accent);cursor:pointer;border:none;box-shadow:0 0 6px rgba(99,102,241,.4)}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-track{background:transparent}
