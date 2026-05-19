@@ -17,6 +17,9 @@ const wss = new WebSocketServer({ server: httpServer });
 const BASE_PORT = process.env.PORT || 5000;
 const ROOT = path.join(__dirname, '..');
 
+// On Replit the proxy needs 0.0.0.0; locally bind to 127.0.0.1 only
+const BIND_HOST = process.env.REPLIT_DEV_DOMAIN ? '0.0.0.0' : '127.0.0.1';
+
 function openBrowser(url) {
   const platform = process.platform;
   if (platform === 'win32') spawn('cmd', ['/c', 'start', url], { detached: true, stdio: 'ignore' });
@@ -28,7 +31,7 @@ function findAvailablePort(startPort) {
   return new Promise((resolve) => {
     const net = require('net');
     const server = net.createServer();
-    server.listen(startPort, '0.0.0.0', () => {
+    server.listen(startPort, BIND_HOST, () => {
       const port = server.address().port;
       server.close(() => resolve(port));
     });
@@ -785,7 +788,7 @@ ensureFile(PATHS.schedule, { enabled: false, startTime: '20:00', stopTime: '00:0
 ensureDir(PATHS.uploads);
 
 findAvailablePort(Number(BASE_PORT)).then((PORT) => {
-  httpServer.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, BIND_HOST, () => {
     const url = `http://localhost:${PORT}`;
     console.log(`Dashboard running on ${url}`);
     if (Number(BASE_PORT) !== PORT) {
