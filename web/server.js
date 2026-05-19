@@ -14,8 +14,27 @@ const app = express();
 const httpServer = http.createServer(app);
 const wss = new WebSocketServer({ server: httpServer });
 
-const PORT = process.env.PORT || 5000;
+const BASE_PORT = process.env.PORT || 5000;
 const ROOT = path.join(__dirname, '..');
+
+function openBrowser(url) {
+  const platform = process.platform;
+  if (platform === 'win32') spawn('cmd', ['/c', 'start', url], { detached: true, stdio: 'ignore' });
+  else if (platform === 'darwin') spawn('open', [url], { detached: true, stdio: 'ignore' });
+  else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
+}
+
+function findAvailablePort(startPort) {
+  return new Promise((resolve) => {
+    const net = require('net');
+    const server = net.createServer();
+    server.listen(startPort, '0.0.0.0', () => {
+      const port = server.address().port;
+      server.close(() => resolve(port));
+    });
+    server.on('error', () => resolve(findAvailablePort(startPort + 1)));
+  });
+}
 
 const PATHS = {
   config:   path.join(ROOT, 'setup', 'config.json'),
@@ -765,6 +784,13 @@ ensureFile(PATHS.stats, {
 ensureFile(PATHS.schedule, { enabled: false, startTime: '20:00', stopTime: '00:00', days: [0,1,2,3,4,5,6] });
 ensureDir(PATHS.uploads);
 
-httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`Dashboard running on http://0.0.0.0:${PORT}`);
+findAvailablePort(Number(BASE_PORT)).then((PORT) => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    const url = `http://localhost:${PORT}`;
+    console.log(`Dashboard running on ${url}`);
+    if (Number(BASE_PORT) !== PORT) {
+      console.log(`[Info] Port ${BASE_PORT} was busy, switched to port ${PORT}`);
+    }
+    openBrowser(url);
+  });
 });
