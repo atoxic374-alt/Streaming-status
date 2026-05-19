@@ -100,7 +100,7 @@ body{font-family:'Inter',system-ui,sans-serif;color:var(--text);background:var(-
 
 /* ── Mobile header ── */
 .mobile-header{display:none;position:fixed;top:0;left:0;right:0;height:var(--topbar-h);background:var(--bg-panel);border-bottom:1px solid var(--border);backdrop-filter:blur(16px);padding:0 16px;align-items:center;justify-content:space-between;z-index:200}
-.mobile-nav{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--bg-panel);border-top:1px solid var(--border);backdrop-filter:blur(16px);padding:8px 0 max(8px,env(safe-area-inset-bottom));z-index:200;display:none;align-items:center;justify-content:space-around}
+.mobile-nav{position:fixed;bottom:0;left:0;right:0;background:var(--bg-panel);border-top:1px solid var(--border);backdrop-filter:blur(16px);padding:8px 0 max(8px,env(safe-area-inset-bottom));z-index:200;display:none;align-items:center;justify-content:space-around}
 .mnav-item{background:none;border:none;color:var(--text-dim);padding:8px 16px;border-radius:var(--radius-sm);cursor:pointer;transition:all var(--ease)}
 .mnav-item.active{color:var(--primary)}
 
@@ -612,3 +612,53 @@ code{font-family:monospace;font-size:11px;background:var(--bg-input);padding:1px
 .amb-music{background:rgba(30,215,96,.12);color:#1DB954;border:1px solid rgba(30,215,96,.3)}
 .amb-divider{font-size:14px;font-weight:700;color:var(--text-muted);margin:0 2px}
 .amb-note{font-size:10px;color:var(--text-muted);margin-left:auto}
+
+/* ── Charts ── */
+#chartRotation,#chartSessions{display:block;width:100%!important;height:100%!important}
+
+/* ── Profile Comparison Modal ── */
+.cmp-overlay{position:fixed;inset:0;z-index:900;background:rgba(0,0,0,.65);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;padding:20px}
+.cmp-modal{background:var(--bg-panel);border:1px solid var(--border-light);border-radius:var(--radius-lg);width:100%;max-width:680px;max-height:85vh;display:flex;flex-direction:column;box-shadow:var(--shadow);animation:popIn .2s cubic-bezier(.4,0,.2,1)}
+.cmp-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)}
+.cmp-header h3{font-size:15px;font-weight:700}
+.cmp-body{overflow:auto;flex:1;padding:16px 20px}
+.cmp-footer{padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+.cmp-legend{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--text-muted);margin-bottom:12px}
+.cmp-legend-dot{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+.cmp-diff-dot{background:rgba(122,80,96,.35)}
+.cmp-table{width:100%;border-collapse:collapse;font-size:13px}
+.cmp-table th{text-align:left;padding:10px 12px;font-size:11px;font-weight:700;color:var(--text-muted);letter-spacing:.5px;text-transform:uppercase;border-bottom:2px solid var(--border);position:sticky;top:0;background:var(--bg-panel);z-index:1}
+.cmp-table td{padding:9px 12px;border-bottom:1px solid rgba(255,255,255,.03);vertical-align:middle}
+.cmp-table tr:last-child td{border-bottom:none}
+.cmp-label{font-size:12px;color:var(--text-dim);font-weight:500;white-space:nowrap}
+.cmp-val{font-size:13px;color:var(--text);font-weight:600}
+.cmp-diff td{background:rgba(122,80,96,.07)}
+.cmp-diff td.cmp-val{color:var(--accent)}
+.cmp-profile-col{color:var(--primary)!important}
+.profile-card.cmp-selected{border-color:rgba(122,80,96,.55)!important;box-shadow:0 0 0 2px rgba(122,80,96,.18)}
+
+/* ── Mobile improvements ── */
+@media(max-width:768px){
+  .section-header{flex-direction:column;align-items:flex-start;gap:10px}
+  .header-actions{flex-wrap:wrap;width:100%}
+  .header-actions .btn{flex:1;justify-content:center;min-width:80px}
+  .panel{padding:14px}
+  .profile-actions{flex-wrap:wrap}
+  .profile-actions .btn{flex:1;min-width:70px;justify-content:center}
+  .cmp-modal{max-width:100%;max-height:95vh}
+  .cmp-table th,.cmp-table td{padding:8px 8px;font-size:11px}
+  .days-grid{gap:4px}
+  .day-btn{width:40px;height:34px;font-size:11px}
+  .two-col{grid-template-columns:1fr}
+}
+@media(max-width:480px){
+  .section-title{font-size:20px!important}
+  .btn{padding:7px 12px;font-size:12px}
+  .stat-card{padding:12px;gap:10px}
+  .stat-icon{width:36px;height:36px}
+  .stat-val{font-size:16px!important}
+  .header-actions .btn svg{display:none}
+  .mnav-item{padding:6px 8px}
+  .mnav-item svg{width:22px;height:22px}
+  .toast{bottom:75px;right:12px;left:12px}
+}

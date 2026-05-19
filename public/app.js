@@ -67,6 +67,11 @@ const S = {
   _editingField: null,
 };
 
+// ── Chart & Compare State ───────────────────────────────────────────
+let compareIds   = [];
+let _chartRot    = null;
+let _chartSess   = null;
+
 // ── Field Config (popup editor metadata) ───────────────────────────
 const FIELD_CONFIG = {
   text1:       { label: 'Details',      hint: 'Shown as the main activity details',               type: 'lines', rows: 2 },
@@ -1515,13 +1520,17 @@ function renderProfiles() {
   if (empty) empty.style.display = 'none';
   S.profiles.forEach((p, i) => {
     const card = document.createElement('div');
-    card.className = 'profile-card';
+    const isSel = compareIds.includes(p.id);
+    card.className = 'profile-card' + (isSel ? ' cmp-selected' : '');
     card.style.animationDelay = `${i * 50}ms`;
     card.innerHTML = `
       <div class="profile-name">${escHtml(p.name)}</div>
       <div class="profile-date">Saved ${fmtDate(p.createdAt)}</div>
       <div class="profile-actions">
         <button class="btn btn-primary" onclick="applyProfile('${p.id}')">Apply</button>
+        <button class="btn ${isSel ? 'btn-primary' : 'btn-outline'}" onclick="toggleCompare('${p.id}')">
+          ${isSel ? '✓ Selected' : 'Compare'}
+        </button>
         <button class="btn btn-outline" onclick="deleteProfile('${p.id}')">Delete</button>
       </div>`;
     grid.insertBefore(card, $('profilesEmpty'));
@@ -1651,6 +1660,128 @@ async function loadAnalytics() {
           </div>`;
         }).join('');
   }
+
+  _initCharts(d);
+}
+
+// ── Charts ─────────────────────────────────────────────────────────
+function _initCharts(data) {
+  if (!window.Chart) return;
+  const rot  = data.rotationCounts || {};
+  const sess = (data.sessions || []).slice(-10);
+  const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+  const gridColor  = isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.06)';
+  const tickColor  = isDark ? '#8a7278' : '#7a6268';
+
+  const totalRot = Object.values(rot).reduce((a, b) => a + b, 0);
+  const rotCtx = document.getElementById('chartRotation');
+  if (rotCtx) {
+    if (_chartRot) _chartRot.destroy();
+    const rotData = [rot.text1||0, rot.text2||0, rot.images||0, rot.customStatus||0, rot.spotify||0, rot.url||0];
+    const hasData = rotData.some(v => v > 0);
+    document.getElementById('chartRotEmpty').style.display = hasData ? 'none' : '';
+    if (hasData) {
+      _chartRot = new Chart(rotCtx, {
+        type: 'doughnut',
+        data: {
+          labels: ['Details', 'State', 'Images', 'Custom Status', 'Spotify', 'URLs'],
+          datasets: [{ data: rotData, backgroundColor: ['#7a5060','#9a7080','#fb923c','#c084fc','#1DB954','#5b8def'], borderWidth: 0, hoverOffset: 6 }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false, cutout: '62%',
+          plugins: {
+            legend: { position: 'right', labels: { color: tickColor, font: { size: 11 }, padding: 10, boxWidth: 12 } },
+            tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${ctx.parsed} rotations` } }
+          }
+        }
+      });
+    }
+  }
+
+  const sessCtx = document.getElementById('chartSessions');
+  if (sessCtx) {
+    if (_chartSess) _chartSess.destroy();
+    document.getElementById('chartSessEmpty').style.display = sess.length ? 'none' : '';
+    if (sess.length) {
+      _chartSess = new Chart(sessCtx, {
+        type: 'bar',
+        data: {
+          labels: sess.map(s => { const d = new Date(s.start); return `${d.getMonth()+1}/${d.getDate()}`; }),
+          datasets: [{ label: 'Duration (min)', data: sess.map(s => Math.round((s.uptime||0)/60)),
+            backgroundColor: sess.map(s => (s.exitCode===0||s.exitCode===null) ? 'rgba(74,222,128,0.6)' : 'rgba(248,113,113,0.6)'),
+            borderColor:     sess.map(s => (s.exitCode===0||s.exitCode===null) ? '#4ade80'              : '#f87171'),
+            borderWidth: 1, borderRadius: 4 }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor } },
+            y: { ticks: { color: tickColor, font: { size: 10 } }, grid: { color: gridColor }, beginAtZero: true }
+          }
+        }
+      });
+    }
+  }
+}
+
+// ── Profile Comparison ─────────────────────────────────────────────
+function toggleCompare(id) {
+  const idx = compareIds.indexOf(id);
+  if (idx > -1) { compareIds.splice(idx, 1); }
+  else if (compareIds.length < 2) { compareIds.push(id); }
+  else { compareIds = [compareIds[1], id]; }
+  renderProfiles();
+  if (compareIds.length === 2) _showCompareModal();
+}
+
+function _showCompareModal() {
+  const p1 = S.profiles.find(p => p.id === compareIds[0]);
+  const p2 = S.profiles.find(p => p.id === compareIds[1]);
+  if (!p1 || !p2) return;
+
+  const c1 = p1.config || {}, c2 = p2.config || {};
+  const cfg1 = c1.config || {}, cfg2 = c2.config || {};
+  const opt1 = cfg1.options || {}, opt2 = cfg2.options || {};
+
+  const row = (label, v1, v2) => {
+    const diff = String(v1) !== String(v2);
+    return `<tr class="${diff ? 'cmp-diff' : ''}">
+      <td class="cmp-label">${escHtml(label)}</td>
+      <td class="cmp-val">${escHtml(String(v1 ?? '—'))}</td>
+      <td class="cmp-val">${escHtml(String(v2 ?? '—'))}</td>
+    </tr>`;
+  };
+
+  const rows = [
+    row('Rotation Delay', (c1.setup?.delay||60)+'s', (c2.setup?.delay||60)+'s'),
+    row('Status',         opt1.status||'online',      opt2.status||'online'),
+    row('Activity Name',  opt1['activity-name']||'—', opt2['activity-name']||'—'),
+    row('Details (text-1)',   (cfg1['text-1']||[]).length+' items', (cfg2['text-1']||[]).length+' items'),
+    row('State (text-2)',     (cfg1['text-2']||[]).length+' items', (cfg2['text-2']||[]).length+' items'),
+    row('Large Images',       (cfg1['bigimg']||[]).length+' items', (cfg2['bigimg']||[]).length+' items'),
+    row('Small Images',       (cfg1['smallimg']||[]).length+' items', (cfg2['smallimg']||[]).length+' items'),
+    row('Watch URLs',         (opt1['watch-url']||[]).length,         (opt2['watch-url']||[]).length),
+    row('Custom Status',      cfg1.customStatus?.enabled?'On':'Off',  cfg2.customStatus?.enabled?'On':'Off'),
+    row('CS Messages',        (cfg1.customStatus?.messages||[]).length, (cfg2.customStatus?.messages||[]).length),
+    row('CS Interval',        (cfg1.customStatus?.intervalSec||300)+'s', (cfg2.customStatus?.intervalSec||300)+'s'),
+    row('Spotify',            cfg1.spotify?.enabled?'On':'Off',  cfg2.spotify?.enabled?'On':'Off'),
+    row('Spotify Tracks',     (cfg1.spotify?.tracks||[]).length, (cfg2.spotify?.tracks||[]).length),
+    row('Human Mode',         opt1.humanMode!==false?'On':'Off', opt2.humanMode!==false?'On':'Off'),
+    row('Strict Verify',      opt1.strictVerify!==false?'On':'Off', opt2.strictVerify!==false?'On':'Off'),
+  ];
+
+  $('cmpTitle1').textContent = p1.name;
+  $('cmpTitle2').textContent = p2.name;
+  $('cmpTableBody').innerHTML = rows.join('');
+  $('cmpApplyA').onclick = () => { applyProfile(p1.id); closeCompareModal(); };
+  $('cmpApplyB').onclick = () => { applyProfile(p2.id); closeCompareModal(); };
+  $('compareModal').style.display = 'flex';
+}
+
+function closeCompareModal(e) {
+  if (e && e.target !== $('compareModal')) return;
+  $('compareModal').style.display = 'none';
 }
 
 // ── Presets ────────────────────────────────────────────────────────

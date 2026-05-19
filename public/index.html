@@ -657,6 +657,23 @@
       </div>
     </div>
 
+    <div class="two-panel" style="margin-bottom:14px">
+      <div class="panel">
+        <div class="panel-header"><h3>Rotation Breakdown</h3><span class="muted-text">All-time totals</span></div>
+        <div style="position:relative;height:220px;margin-top:6px">
+          <canvas id="chartRotation"></canvas>
+          <div id="chartRotEmpty" class="empty-state" style="display:none;padding:20px;position:absolute;inset:0"><p>No rotations yet</p></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h3>Session Durations</h3><span class="muted-text">Minutes · last 10</span></div>
+        <div style="position:relative;height:220px;margin-top:6px">
+          <canvas id="chartSessions"></canvas>
+          <div id="chartSessEmpty" class="empty-state" style="display:none;padding:20px;position:absolute;inset:0"><p>No sessions yet</p></div>
+        </div>
+      </div>
+    </div>
+
     <div class="panel">
       <div class="panel-header">
         <h3>Error Logs</h3>
@@ -765,6 +782,39 @@
 </div>
 <div id="editOverlay" onclick="closeEditPopup()" style="display:none;position:fixed;inset:0;z-index:997"></div>
 
+<!-- ── Profile Compare Modal ── -->
+<div class="cmp-overlay" id="compareModal" style="display:none" onclick="closeCompareModal(event)">
+  <div class="cmp-modal">
+    <div class="cmp-header">
+      <h3>Profile Comparison</h3>
+      <button class="icon-btn" onclick="closeCompareModal()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="cmp-body">
+      <div class="cmp-legend">
+        <span class="cmp-legend-dot cmp-diff-dot"></span><span>Highlighted rows = differences between the two profiles</span>
+      </div>
+      <table class="cmp-table">
+        <thead>
+          <tr>
+            <th>Setting</th>
+            <th id="cmpTitle1" class="cmp-profile-col">Profile A</th>
+            <th id="cmpTitle2" class="cmp-profile-col">Profile B</th>
+          </tr>
+        </thead>
+        <tbody id="cmpTableBody"></tbody>
+      </table>
+    </div>
+    <div class="cmp-footer">
+      <button class="btn btn-outline" onclick="closeCompareModal()">Close</button>
+      <button class="btn btn-primary" id="cmpApplyA">Apply A</button>
+      <button class="btn btn-primary" id="cmpApplyB">Apply B</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
