@@ -1,1 +1,88 @@
-[]
+[
+  {
+    "id": "50e71d64-c95b-4e15-b385-c6fe3749e7bd",
+    "name": "Ahmed",
+    "config": {
+      "setup": {
+        "delay": 300
+      },
+      "config": {
+        "options": {
+          "watch-url": [
+            "https://www.twitch.tv/OnlyAa"
+          ],
+          "timestamp": "{start}",
+          "humanMode": true,
+          "humanJitter": 0.25,
+          "idleChance": 0.04,
+          "idleMinSec": 60,
+          "idleMaxSec": 240,
+          "botid": "1162408588506054757",
+          "activity-name": "Live",
+          "activity-type": "STREAMING",
+          "strictVerify": true,
+          "status": "dnd",
+          "presence-status": "dnd",
+          "requireGatewayEcho": false
+        },
+        "text-1": [
+          "Only it"
+        ],
+        "text-2": [
+          "111"
+        ],
+        "text-3": [
+          "Hate it"
+        ],
+        "bigimg": [
+          "https://cb97dc0e-2999-45c1-ba58-50347a4c02cf-00-1hwb2dig09pva.riker.replit.dev/uploads/1779173538250-4313f79c-34e7d3a52f3b0fd0c370b4e753e1696f.jpg",
+          "https://cb97dc0e-2999-45c1-ba58-50347a4c02cf-00-1hwb2dig09pva.riker.replit.dev/uploads/1779227509047-90d0a793-6a55667a9665bb95e148cf16433d76f1.jpg"
+        ],
+        "smallimg": [],
+        "button-1": [],
+        "button-2": [],
+        "spotify": {
+          "enabled": true,
+          "tracks": [
+            {
+              "song": "Die For It.",
+              "artist": "Xxx",
+              "duration": 71,
+              "albumArtUrl": "https://cb97dc0e-2999-45c1-ba58-50347a4c02cf-00-1hwb2dig09pva.riker.replit.dev/uploads/1779221333347-fa1b2dce-6a55667a9665bb95e148cf16433d76f1.jpg",
+              "albumArtId": "",
+              "songId": "",
+              "albumId": "",
+              "artistIds": ""
+            }
+          ],
+          "song": "Die For It.",
+          "artist": "Xxx",
+          "duration": 71,
+          "albumArtUrl": "https://cb97dc0e-2999-45c1-ba58-50347a4c02cf-00-1hwb2dig09pva.riker.replit.dev/uploads/1779221333347-fa1b2dce-6a55667a9665bb95e148cf16433d76f1.jpg"
+        },
+        "text-4": [
+          "Aa"
+        ],
+        "customStatus": {
+          "enabled": true,
+          "intervalSec": 60,
+          "messages": [
+            {
+              "text": "ح",
+              "emoji": "🙂"
+            },
+            {
+              "text": "حم",
+              "emoji": "🥳"
+            },
+            {
+              "text": "شط",
+              "emoji": "🔥"
+            }
+          ]
+        }
+      }
+    },
+    "createdAt": "2026-05-19T21:53:50.018Z"
+  }
+]

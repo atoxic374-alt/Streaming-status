@@ -1,1 +1,51 @@
-{"totalUptime":0,"sessions":[],"rotationCounts":{"text1":0,"text2":0,"text3":0,"images":0}}
+{
+  "schemaVersion": 2,
+  "totalUptime": 1275,
+  "totalSessions": 5,
+  "sessions": [
+    {
+      "start": 1779226046751,
+      "end": 1779226149523,
+      "uptime": 102,
+      "exitCode": null
+    },
+    {
+      "start": 1779226150587,
+      "end": 1779226282225,
+      "uptime": 131,
+      "exitCode": null
+    },
+    {
+      "start": 1779226282888,
+      "end": 1779226379185,
+      "uptime": 96,
+      "exitCode": null
+    },
+    {
+      "start": 1779226380611,
+      "end": 1779226445307,
+      "uptime": 64,
+      "exitCode": null
+    },
+    {
+      "start": 1779227862082,
+      "end": 1779228744774,
+      "uptime": 882,
+      "exitCode": null
+    }
+  ],
+  "rotationCounts": {
+    "text1": 0,
+    "text2": 0,
+    "text3": 0,
+    "text4": 0,
+    "images": 4,
+    "buttons": 0,
+    "customStatus": 17,
+    "spotify": 0,
+    "url": 0
+  },
+  "verifyCounts": {
+    "failed": 0
+  }
+}

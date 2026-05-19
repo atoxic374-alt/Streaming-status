@@ -1,6 +1,7 @@
 {
   "name": "streaming-status-dashboard",
   "version": "2.0.0",
+  "author": "Ahmed",
   "private": true,
   "scripts": {
     "start": "node index.js",

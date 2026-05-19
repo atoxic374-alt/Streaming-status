@@ -1,6 +1,6 @@
 'use strict';
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
 
 const express = require('express');
 const http = require('http');
@@ -24,16 +24,37 @@ const PATHS = {
   stats:    path.join(ROOT, 'setup', 'stats.json'),
   schedule: path.join(ROOT, 'setup', 'schedule.json'),
   env:      path.join(ROOT, '.env'),
+  uploads:  path.join(ROOT, 'public', 'uploads'),
 };
 const BOT_ENTRY = path.join(ROOT, 'index.js');
+
+const ROTATION_KEYS = ['text1', 'text2', 'text3', 'text4', 'images', 'customStatus', 'spotify', 'url'];
+const VALID_PRESENCE_STATUSES = new Set(['online', 'idle', 'dnd']);
+const MIN_STREAM_ROTATION_SEC = 60;
+const MIN_CUSTOM_STATUS_SEC = 60;
+const MAX_ROTATION_SEC = 86400;
+function defaultRotationCounts() {
+  return Object.fromEntries(ROTATION_KEYS.map(key => [key, 0]));
+}
+function addCounts(a = {}, b = {}, defaults = {}) {
+  const out = { ...defaults, ...a };
+  for (const [key, value] of Object.entries(b || {})) {
+    out[key] = (out[key] || 0) + (Number(value) || 0);
+  }
+  return out;
+}
 
 // ── Runtime State ──────────────────────────────────────────────────
 let botProc = null;
 let botLogs = [];
 let errorLogs = [];
 let sessionStart = null;
-let rotationCounts = { text1: 0, text2: 0, text3: 0, images: 0 };
+let rotationCounts = defaultRotationCounts();
+let verifyCounts = { failed: 0 };
+let lastPresence = null;
 let wsClients = new Set();
+// Rate-limit tracking: masked_token → { masked, endTs, attempts, hitAt }
+let rateLimits = {};
 
 // ── WebSocket Broadcast ────────────────────────────────────────────
 function broadcast(type, data) {
@@ -47,7 +68,7 @@ wss.on('connection', (ws) => {
   wsClients.add(ws);
   ws.send(JSON.stringify({
     type: 'init',
-    data: { logs: botLogs.slice(-150), errorLogs: errorLogs.slice(-50) }
+    data: { logs: botLogs.slice(-150), errorLogs: errorLogs.slice(-50), lastPresence }
   }));
   ws.on('close', () => wsClients.delete(ws));
   ws.on('error', () => wsClients.delete(ws));
@@ -76,6 +97,9 @@ function writeJSON(p, v) {
 function ensureFile(p, def) {
   if (!fs.existsSync(p)) writeJSON(p, def);
 }
+function ensureDir(p) {
+  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+}
 
 // ── Token Helpers ──────────────────────────────────────────────────
 function extractTokens() {
@@ -100,19 +124,26 @@ function maskToken(token) {
 // ── Stats Helpers ──────────────────────────────────────────────────
 function loadStats() {
   return readJSON(PATHS.stats, {
-    totalUptime: 0, sessions: [],
-    rotationCounts: { text1: 0, text2: 0, text3: 0, images: 0 }
+    schemaVersion: 2,
+    totalUptime: 0,
+    totalSessions: 0,
+    sessions: [],
+    rotationCounts: defaultRotationCounts(),
+    verifyCounts: { failed: 0 },
   });
 }
 function saveStats(extra = {}) {
   const saved = loadStats();
-  const up = sessionStart ? Math.floor((Date.now() - sessionStart) / 1000) : 0;
-  saved.totalUptime += up;
+  saved.schemaVersion = 2;
+  const up = extra.session?.uptime ?? (sessionStart ? Math.floor((Date.now() - sessionStart) / 1000) : 0);
+  saved.totalUptime = (Number(saved.totalUptime) || 0) + up;
   if (extra.session) {
+    saved.totalSessions = (Number(saved.totalSessions) || saved.sessions.length || 0) + 1;
     saved.sessions.push(extra.session);
     if (saved.sessions.length > 50) saved.sessions = saved.sessions.slice(-50);
   }
-  saved.rotationCounts = { ...saved.rotationCounts, ...rotationCounts };
+  saved.rotationCounts = addCounts(saved.rotationCounts, rotationCounts, defaultRotationCounts());
+  saved.verifyCounts = addCounts(saved.verifyCounts, verifyCounts, { failed: 0 });
   writeJSON(PATHS.stats, saved);
 }
 
@@ -160,21 +191,56 @@ function startBot() {
   const env = { ...process.env, WEATHER_API_KEY: process.env.WEATHER_API_KEY };
   botProc = spawn(process.execPath, [BOT_ENTRY], { cwd: ROOT, env });
   sessionStart = Date.now();
-  rotationCounts = { text1: 0, text2: 0, text3: 0, images: 0 };
-  appendLog(`[Bot] Started — PID ${botProc.pid}`);
+  rotationCounts = defaultRotationCounts();
+  verifyCounts = { failed: 0 };
+  lastPresence = null;
+  appendLog(`[Bot] Started - PID ${botProc.pid}`);
   broadcast('status', { running: true, pid: botProc.pid });
 
   botProc.stdout.on('data', d => {
-    const line = String(d).trim();
-    if (!line) return;
-    const m = line.match(/\[ROT:(\w+)\]/);
-    if (m) rotationCounts[m[1]] = (rotationCounts[m[1]] || 0) + 1;
-    appendLog(line, false);
+    const lines = String(d).trim().split('\n');
+    for (const line of lines) {
+      if (!line.trim()) continue;
+
+      // Parse rotation counters
+      const rot = line.match(/\[ROT:(\w+)\]/);
+      if (rot) rotationCounts[rot[1]] = (rotationCounts[rot[1]] || 0) + 1;
+      if (line.includes('[VERIFY:failed:')) verifyCounts.failed = (verifyCounts.failed || 0) + 1;
+
+      // Parse live presence snapshots from the running Discord client
+      const presence = line.match(/\[PRESENCE:([A-Za-z0-9+/=]+)\]/);
+      if (presence) {
+        try {
+          lastPresence = JSON.parse(Buffer.from(presence[1], 'base64').toString('utf8'));
+          broadcast('presence', lastPresence);
+        } catch (e) {
+          appendLog(`[Presence] Snapshot parse failed: ${e.message}`, true);
+        }
+      }
+
+      // Parse rate-limit events: [RL429:masked:endTs:attempts]
+      const rl = line.match(/\[RL429:([^:]+):(\d+):(\d+)\]/);
+      if (rl) {
+        const [, masked, endTsStr, attemptsStr] = rl;
+        const endTs    = Number(endTsStr);
+        const attempts = Number(attemptsStr);
+        if (endTs === 0 && attempts === 0) {
+          // Cleared
+          delete rateLimits[masked];
+        } else {
+          rateLimits[masked] = { masked, endTs, attempts, hitAt: Date.now() };
+        }
+        broadcast('rateLimit', { limits: Object.values(rateLimits) });
+      }
+
+      const isErrorLine = /\[(Verify|Presence|CustomStatus|Spotify|Preflight)\].*(Failed|failed|mismatch|Error|error|skipped)/.test(line);
+      appendLog(line.trim(), isErrorLine);
+    }
   });
   botProc.stderr.on('data', d => appendLog(`[ERR] ${String(d).trim()}`, true));
   botProc.on('exit', (code, signal) => {
     const up = sessionStart ? Math.floor((Date.now() - sessionStart) / 1000) : 0;
-    appendLog(`[Bot] Exited — code=${code} signal=${signal||'none'} uptime=${up}s`, code !== 0 && code !== null);
+    appendLog(`[Bot] Exited - code=${code} signal=${signal||'none'} uptime=${up}s`, code !== 0 && code !== null);
     saveStats({ session: { start: sessionStart, end: Date.now(), uptime: up, exitCode: code } });
     botProc = null; sessionStart = null;
     broadcast('status', { running: false, pid: null, exitCode: code });
@@ -209,6 +275,8 @@ function runtimeStatus() {
     tokensConfigured: extractTokens().length,
     sessionUptime: sessionStart ? Math.floor((Date.now() - sessionStart) / 1000) : 0,
     rotationCounts,
+    verifyCounts,
+    lastPresence,
     mode: 'real-script-execution',
     cookieAuth: false,
     lastLogs: botLogs.slice(-100)
@@ -216,22 +284,87 @@ function runtimeStatus() {
 }
 
 // ── Config Sanitize ────────────────────────────────────────────────
+function sanitizeLines(value, max = 150) {
+  return Array.isArray(value) ? value.map(x => String(x)).filter(Boolean).slice(0, max) : [];
+}
+
+function sanitizeCustomStatus(value) {
+  const src = value || {};
+  const legacy = (src.text || src.emoji) ? [{ text: src.text || '', emoji: src.emoji || '' }] : [];
+  const rawMessages = Array.isArray(src.messages) ? src.messages.slice(0, 150) : legacy;
+  const messages = rawMessages
+    .map(item => typeof item === 'string'
+      ? { text: item, emoji: '' }
+      : { text: item?.text || '', emoji: item?.emoji || '' })
+    .map(item => ({
+      text: String(item.text || '').slice(0, 128),
+      emoji: String(item.emoji || '').slice(0, 128),
+    }))
+    .filter(item => item.text || item.emoji);
+
+  return {
+    enabled: !!src.enabled,
+    intervalSec: Math.min(Math.max(Number(src.intervalSec) || 300, MIN_CUSTOM_STATUS_SEC), MAX_ROTATION_SEC),
+    messages,
+  };
+}
+
+function sanitizeSpotify(value) {
+  const src = value || {};
+  const legacy = (src.song || src.artist || src.albumArtUrl)
+    ? [{
+        song: src.song || '',
+        artist: src.artist || '',
+        duration: src.duration || 210,
+        albumArtUrl: src.albumArtUrl || '',
+        albumArtId: src.albumArtId || '',
+        songId: src.songId || '',
+        albumId: src.albumId || '',
+        artistIds: src.artistIds || '',
+      }]
+    : [];
+  const rawTracks = Array.isArray(src.tracks) && src.tracks.length ? src.tracks : legacy;
+  const tracks = rawTracks.map(track => ({
+    song: String(track?.song || '').slice(0, 128),
+    artist: String(track?.artist || '').slice(0, 128),
+    duration: Math.min(Math.max(Number(track?.duration) || 210, 10), 86400),
+    albumArtUrl: String(track?.albumArtUrl || '').slice(0, 1024),
+    albumArtId: String(track?.albumArtId || '').slice(0, 128),
+    songId: String(track?.songId || '').slice(0, 128),
+    albumId: String(track?.albumId || '').slice(0, 128),
+    artistIds: Array.isArray(track?.artistIds)
+      ? track.artistIds.map(x => String(x).slice(0, 128)).slice(0, 20)
+      : String(track?.artistIds || '').slice(0, 512),
+  })).filter(track => track.song || track.artist || track.albumArtUrl).slice(0, 150);
+
+  return {
+    enabled: !!src.enabled,
+    tracks,
+    // Legacy fields stay populated for older profile/config consumers.
+    song: tracks[0]?.song || '',
+    artist: tracks[0]?.artist || '',
+    duration: tracks[0]?.duration || 210,
+    albumArtUrl: tracks[0]?.albumArtUrl || '',
+  };
+}
+
 function sanitizePayload(config, tokens) {
   const safe = structuredClone(config);
   safe.setup = safe.setup || {};
   safe.config = safe.config || {};
-  safe.setup.delay = Math.min(Math.max(Number(safe.setup.delay) || 10, 5), 120);
-  safe.setup.city = String(safe.setup.city || '').slice(0, 80);
-  ['text-1','text-2','text-3','bigimg','smallimg'].forEach(k => {
-    safe.config[k] = Array.isArray(safe.config[k]) ? safe.config[k].map(x => String(x)).slice(0,150) : [];
+  safe.setup.delay = Math.min(Math.max(Number(safe.setup.delay) || MIN_STREAM_ROTATION_SEC, MIN_STREAM_ROTATION_SEC), MAX_ROTATION_SEC);
+  ['text-1','text-2','text-3','text-4','bigimg','smallimg'].forEach(k => {
+    safe.config[k] = sanitizeLines(safe.config[k], 150);
   });
   safe.config.options = safe.config.options || {};
   safe.config.options['watch-url'] = Array.isArray(safe.config.options?.['watch-url'])
     ? safe.config.options['watch-url'].map(x => String(x)).slice(0,150) : [];
-  ['button-1','button-2'].forEach(k => {
-    const b = safe.config[k]?.[0] || { name:'', url:'' };
-    safe.config[k] = [{ name: String(b.name||'').slice(0,64), url: String(b.url||'').slice(0,512) }];
-  });
+  safe.config.options['activity-name'] = String(
+    safe.config.options['activity-name'] || safe.config.options.activityName || ''
+  ).slice(0, 128);
+  safe.config.options['activity-type'] = 'STREAMING';
+  safe.config['button-1'] = [];
+  safe.config['button-2'] = [];
   // Human simulation settings — preserve as-is (already validated by UI)
   const ho = safe.config.options;
   ho.humanMode   = ho.humanMode   !== false;
@@ -239,14 +372,19 @@ function sanitizePayload(config, tokens) {
   ho.idleChance  = Math.min(Math.max(Number(ho.idleChance)  || 0.04, 0),    0.15);
   ho.idleMinSec  = Math.min(Math.max(Number(ho.idleMinSec)  || 60,   30),   300);
   ho.idleMaxSec  = Math.min(Math.max(Number(ho.idleMaxSec)  || 240,  60),   600);
-  // Preserve spotify, customStatus
-  if (safe.config.spotify)      safe.config.spotify      = safe.config.spotify;
-  if (safe.config.customStatus) safe.config.customStatus = safe.config.customStatus;
+  ho.strictVerify = ho.strictVerify !== false;
+  const status = String(ho.status || ho['presence-status'] || ho.presenceStatus || 'online').toLowerCase();
+  ho.status = VALID_PRESENCE_STATUSES.has(status) ? status : 'online';
+  ho['presence-status'] = ho.status;
+  ho.requireGatewayEcho = ho.requireGatewayEcho === true;
+  safe.config.spotify = sanitizeSpotify(safe.config.spotify);
+  safe.config.customStatus = sanitizeCustomStatus(safe.config.customStatus);
   return { safe, cleanedTokens: tokens.map(t => String(t).trim()).filter(Boolean) };
 }
 
 // ── Middleware ─────────────────────────────────────────────────────
-app.use(express.json({ limit: '4mb' }));
+app.set('trust proxy', true);
+app.use(express.json({ limit: '12mb' }));
 app.use(express.static(path.join(ROOT, 'public')));
 
 // ── API: Settings ──────────────────────────────────────────────────
@@ -259,8 +397,117 @@ app.post('/api/settings', (req, res) => {
   const { safe, cleanedTokens } = sanitizePayload(config, tokens);
   writeJSON(PATHS.config, safe);
   saveTokens(cleanedTokens);
-  appendLog(`[Config] Saved — ${cleanedTokens.length} token(s)`);
+  appendLog(`[Config] Saved - ${cleanedTokens.length} token(s)`);
   res.json({ ok: true });
+});
+
+function sendBotCommand(command) {
+  if (!botProc || !botProc.stdin || botProc.stdin.destroyed) return false;
+  try {
+    botProc.stdin.write(`${JSON.stringify(command)}\n`);
+    return true;
+  } catch (e) {
+    appendLog(`[Bot] Refresh command failed: ${e.message}`, true);
+    return false;
+  }
+}
+
+function getPublicBaseUrl(req) {
+  const configured = process.env.PUBLIC_BASE_URL || process.env.PUBLIC_URL;
+  if (configured && /^https?:\/\//i.test(configured)) return configured.replace(/\/+$/, '');
+  const proto = req.get('x-forwarded-proto') || req.protocol || 'http';
+  const host = req.get('x-forwarded-host') || req.get('host');
+  return `${proto}://${host}`;
+}
+
+// ── API: Image Attachments ─────────────────────────────────────────
+app.post('/api/uploads', (req, res) => {
+  const { name, dataUrl } = req.body || {};
+  const match = String(dataUrl || '').match(/^data:image\/(png|jpe?g|gif|webp|avif);base64,([a-z0-9+/=\s]+)$/i);
+  if (!match) return res.status(400).json({ error: 'invalid image attachment' });
+
+  const ext = match[1].toLowerCase().replace('jpeg', 'jpg');
+  const data = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+  if (!data.length || data.length > 8 * 1024 * 1024) {
+    return res.status(400).json({ error: 'image must be 8MB or smaller' });
+  }
+
+  ensureDir(PATHS.uploads);
+  const safeName = String(name || `asset.${ext}`)
+    .replace(/[^a-z0-9._-]/gi, '-')
+    .slice(-80);
+  const normalizedName = safeName.toLowerCase().endsWith(`.${ext}`) ? safeName : `${safeName || 'asset'}.${ext}`;
+  const fileName = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${normalizedName}`;
+  const filePath = path.join(PATHS.uploads, fileName);
+  fs.writeFileSync(filePath, data);
+
+  const url = `${getPublicBaseUrl(req)}/uploads/${encodeURIComponent(fileName)}`;
+  appendLog(`[Upload] Rich Presence image attached: ${fileName}`);
+  res.json({ ok: true, url });
+});
+
+// ── API: Custom Status Emojis ──────────────────────────────────────
+app.get('/api/emojis', async (_, res) => {
+  const tokens = extractTokens();
+  if (!tokens.length) return res.json({ emojis: [], error: 'No token configured' });
+
+  const token = tokens[0];
+  const headers = {
+    Authorization: token,
+    'Content-Type': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0 Safari/537.36',
+  };
+
+  try {
+    const guildReq = await fetch('https://discord.com/api/v10/users/@me/guilds', {
+      headers,
+      signal: AbortSignal.timeout(9000),
+    });
+    if (!guildReq.ok) {
+      const err = await guildReq.json().catch(() => ({}));
+      return res.json({ emojis: [], error: err.message || `HTTP ${guildReq.status}` });
+    }
+
+    const guilds = (await guildReq.json()).slice(0, 80);
+    const emojis = [];
+    for (const guild of guilds) {
+      try {
+        const r = await fetch(`https://discord.com/api/v10/guilds/${guild.id}/emojis`, {
+          headers,
+          signal: AbortSignal.timeout(9000),
+        });
+        if (!r.ok) continue;
+        const list = await r.json();
+        for (const emoji of Array.isArray(list) ? list : []) {
+          if (!emoji?.id || !emoji?.name) continue;
+          emojis.push({
+            id: emoji.id,
+            name: emoji.name,
+            animated: !!emoji.animated,
+            guildId: guild.id,
+            guildName: guild.name || 'Server',
+            value: `${emoji.animated ? '<a' : '<'}:${emoji.name}:${emoji.id}>`,
+            url: `https://cdn.discordapp.com/emojis/${emoji.id}.${emoji.animated ? 'gif' : 'png'}?size=48`,
+          });
+        }
+      } catch {}
+      if (emojis.length >= 500) break;
+    }
+
+    res.json({ emojis: emojis.slice(0, 500) });
+  } catch (e) {
+    res.json({ emojis: [], error: e.message });
+  }
+});
+
+// ── API: Rate Limits ───────────────────────────────────────────────
+app.get('/api/ratelimits', (_, res) => {
+  // Prune expired entries
+  const now = Date.now();
+  for (const k of Object.keys(rateLimits)) {
+    if (rateLimits[k].endTs > 0 && rateLimits[k].endTs < now) delete rateLimits[k];
+  }
+  res.json({ limits: Object.values(rateLimits) });
 });
 
 // ── API: Runtime ───────────────────────────────────────────────────
@@ -274,6 +521,13 @@ app.post('/api/runtime/stop', (_, res) => {
   if (!botProc) return res.status(409).json({ error: 'not running' });
   stopBot();
   res.json({ ok: true });
+});
+app.post('/api/runtime/refresh', (_, res) => {
+  if (!botProc) return res.status(409).json({ error: 'not running' });
+  const ok = sendBotCommand({ type: 'refreshPresence', reason: 'dashboard' });
+  if (!ok) return res.status(500).json({ error: 'refresh command failed' });
+  appendLog('[Bot] Refresh requested');
+  res.json({ ok: true, status: runtimeStatus() });
 });
 
 // ── API: Discord Developer Portal Applications ─────────────────────
@@ -389,12 +643,15 @@ app.get('/api/stats', (_, res) => {
   const cur = sessionStart ? Math.floor((Date.now() - sessionStart) / 1000) : 0;
   const ramTotal = os.totalmem();
   const ramFree = os.freemem();
+  const savedSessions = Number(saved.totalSessions) || (saved.sessions || []).length || 0;
   res.json({
     running: !!botProc, pid: botProc?.pid || null,
     sessionUptime: cur,
-    totalUptime: saved.totalUptime + cur,
+    totalUptime: (Number(saved.totalUptime) || 0) + cur,
+    totalSessions: savedSessions + (botProc ? 1 : 0),
     sessions: saved.sessions.slice(-10),
-    rotationCounts: { ...saved.rotationCounts, ...Object.fromEntries(Object.entries(rotationCounts).map(([k,v]) => [k, (saved.rotationCounts[k]||0)+v])) },
+    rotationCounts: addCounts(saved.rotationCounts, rotationCounts, defaultRotationCounts()),
+    verifyCounts: addCounts(saved.verifyCounts, verifyCounts, { failed: 0 }),
     cpu: getCpuUsage(),
     ram: Math.floor((ramTotal - ramFree) / ramTotal * 100),
     ramUsed: +(( ramTotal - ramFree) / 1e9).toFixed(1),
@@ -411,7 +668,7 @@ app.post('/api/schedule', (req, res) => {
   const { enabled, startTime, stopTime, days } = req.body;
   const s = { enabled: !!enabled, startTime: startTime||'20:00', stopTime: stopTime||'00:00', days: days||[0,1,2,3,4,5,6] };
   writeJSON(PATHS.schedule, s);
-  appendLog(`[Schedule] ${enabled ? 'Enabled' : 'Disabled'} — ${startTime} → ${stopTime}`);
+  appendLog(`[Schedule] ${enabled ? 'Enabled' : 'Disabled'} - ${startTime} -> ${stopTime}`);
   res.json({ ok: true, schedule: s });
 });
 
@@ -433,13 +690,12 @@ app.post('/api/webhook/test', async (req, res) => {
 // ── API: Environment ───────────────────────────────────────────────
 app.get('/api/env', (_, res) => {
   res.json({
-    hasWeatherKey: !!process.env.WEATHER_API_KEY,
     hasWebhook: !!(process.env.DISCORD_WEBHOOK && process.env.DISCORD_WEBHOOK.startsWith('http')),
     webhookUrl: process.env.DISCORD_WEBHOOK || '',
   });
 });
 app.post('/api/env', (req, res) => {
-  const { weatherKey, webhookUrl } = req.body;
+  const { webhookUrl } = req.body;
   let content = '';
   try { content = fs.readFileSync(PATHS.env, 'utf8'); } catch {}
   const lines = content.split('\n').filter(Boolean);
@@ -448,7 +704,6 @@ app.post('/api/env', (req, res) => {
     if (v) { if (i >= 0) lines[i] = `${k}=${v}`; else lines.push(`${k}=${v}`); }
     else if (i >= 0) lines.splice(i, 1);
   };
-  if (weatherKey && !weatherKey.includes('•')) { set('WEATHER_API_KEY', weatherKey); process.env.WEATHER_API_KEY = weatherKey; }
   if (webhookUrl !== undefined) { set('DISCORD_WEBHOOK', webhookUrl); process.env.DISCORD_WEBHOOK = webhookUrl; }
   fs.writeFileSync(PATHS.env, lines.join('\n') + '\n', 'utf8');
   appendLog('[Settings] Environment updated');
@@ -493,13 +748,22 @@ setInterval(() => {
     running: !!botProc,
     sessionUptime: sessionStart ? Math.floor((Date.now() - sessionStart) / 1000) : 0,
     rotationCounts,
+    verifyCounts,
   });
 }, 5000);
 
 // ── Init & Listen ──────────────────────────────────────────────────
 ensureFile(PATHS.profiles, []);
-ensureFile(PATHS.stats, { totalUptime: 0, sessions: [], rotationCounts: { text1: 0, text2: 0, text3: 0, images: 0 } });
+ensureFile(PATHS.stats, {
+  schemaVersion: 2,
+  totalUptime: 0,
+  totalSessions: 0,
+  sessions: [],
+  rotationCounts: defaultRotationCounts(),
+  verifyCounts: { failed: 0 },
+});
 ensureFile(PATHS.schedule, { enabled: false, startTime: '20:00', stopTime: '00:00', days: [0,1,2,3,4,5,6] });
+ensureDir(PATHS.uploads);
 
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`Dashboard running on http://0.0.0.0:${PORT}`);
