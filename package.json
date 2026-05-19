@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "start": "node index.js",
-    "dashboard": "node web/server.js"
+    "dashboard": "node web/server.js",
+    "tray": "powershell -ExecutionPolicy Bypass -File tray.ps1"
   },
   "dependencies": {
     "colors": "^1.4.0",

@@ -791,6 +791,6 @@ findAvailablePort(Number(BASE_PORT)).then((PORT) => {
     if (Number(BASE_PORT) !== PORT) {
       console.log(`[Info] Port ${BASE_PORT} was busy, switched to port ${PORT}`);
     }
-    openBrowser(url);
+    if (!process.env.NO_AUTO_OPEN) openBrowser(url);
   });
 });
