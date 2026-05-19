@@ -4,7 +4,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const app = express();
-const PORT = process.env.PORT || 3210;
+const PORT = process.env.PORT || 5000;
 const CONFIG_PATH = path.join(__dirname, '..', 'setup', 'config.json');
 const TOKENS_PATH = path.join(__dirname, '..', 'setup', 'starter.js');
 const BOT_ENTRY = path.join(__dirname, '..', 'index.js');
@@ -124,6 +124,6 @@ app.post('/api/runtime/stop', (_, res) => {
   return res.json({ ok: true, status: runtimeStatus() });
 });
 
-app.listen(PORT, () => {
-  console.log(`Dashboard running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Dashboard running on http://0.0.0.0:${PORT}`);
 });
