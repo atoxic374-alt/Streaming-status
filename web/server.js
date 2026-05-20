@@ -953,6 +953,75 @@ app.post('/api/schedule', (req, res) => {
   res.json({ ok: true, schedule: s });
 });
 
+// ── API: Image Cleanup ─────────────────────────────────────────────
+// Deletes local upload files no longer referenced in any config or profile.
+app.post('/api/uploads/cleanup', (_, res) => {
+  try {
+    // Collect every upload URL referenced anywhere
+    const cfg      = readJSON(PATHS.config, {});
+    const profiles = readJSON(PATHS.profiles, []);
+
+    const referencedUrls = new Set();
+
+    function collectUrls(obj) {
+      if (!obj || typeof obj !== 'object') return;
+      if (Array.isArray(obj)) { obj.forEach(collectUrls); return; }
+      for (const [k, v] of Object.entries(obj)) {
+        if (typeof v === 'string' && v.includes('/uploads/')) referencedUrls.add(v);
+        else collectUrls(v);
+      }
+    }
+    collectUrls(cfg);
+    profiles.forEach(p => collectUrls(p));
+
+    // Extract file names from referenced URLs
+    const referencedFiles = new Set(
+      [...referencedUrls].map(u => {
+        try { return decodeURIComponent(new URL(u).pathname.split('/uploads/').pop()); }
+        catch { return null; }
+      }).filter(Boolean)
+    );
+
+    // List all files in uploads dir (skip manifest.json)
+    const uploadsDir = PATHS.uploads;
+    if (!fs.existsSync(uploadsDir)) return res.json({ deleted: 0, freed: 0, kept: 0 });
+
+    const allFiles = fs.readdirSync(uploadsDir)
+      .filter(f => f !== 'manifest.json' && !f.startsWith('.'));
+
+    let deleted = 0, freed = 0;
+    const manifest = loadManifest();
+
+    for (const file of allFiles) {
+      if (referencedFiles.has(file)) continue;
+
+      const fp = path.join(uploadsDir, file);
+      try {
+        const size = fs.statSync(fp).size;
+        fs.unlinkSync(fp);
+        freed += size;
+        deleted++;
+        appendLog(`[Cleanup] Deleted unused image: ${file}`);
+
+        // Remove from manifest
+        for (const key of Object.keys(manifest)) {
+          if (manifest[key].fileName === file) delete manifest[key];
+        }
+      } catch (e) {
+        appendLog(`[Cleanup] Could not delete ${file}: ${e.message}`, true);
+      }
+    }
+
+    saveManifest(manifest);
+    const kept = allFiles.length - deleted;
+    appendLog(`[Cleanup] Done — ${deleted} file(s) deleted, ${(freed / 1024).toFixed(1)} KB freed, ${kept} kept`);
+    res.json({ ok: true, deleted, freed, kept });
+  } catch (e) {
+    appendLog(`[Cleanup] Error: ${e.message}`, true);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── API: Shutdown (kill-switch) ────────────────────────────────────
 app.post('/api/shutdown', (req, res) => {
   if (botProc) stopBot();

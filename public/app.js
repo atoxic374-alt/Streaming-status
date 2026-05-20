@@ -2151,6 +2151,35 @@ document.addEventListener('DOMContentLoaded', async () => {
   setInterval(() => { if (S.section === 'analytics') loadAnalytics(); }, 10000);
 
   // ── Kill-switch wiring ──
+  $('cleanupImagesBtn')?.addEventListener('click', async () => {
+    const btn = $('cleanupImagesBtn');
+    const result = $('cleanupResult');
+    setBusyButton(btn, true, 'Scanning…');
+    result.style.display = 'none';
+    try {
+      const r = await post('/api/uploads/cleanup', {});
+      if (!r.ok) { toast('Cleanup failed', 'error'); return; }
+      const d = await r.json();
+      if (d.error) { toast(d.error, 'error'); return; }
+      const freed = d.freed >= 1024 * 1024
+        ? `${(d.freed / 1024 / 1024).toFixed(1)} MB`
+        : `${(d.freed / 1024).toFixed(1)} KB`;
+      result.style.display = 'block';
+      if (d.deleted === 0) {
+        result.style.color = 'var(--text-dim)';
+        result.textContent = `Nothing to clean — all ${d.kept} image(s) are in use.`;
+      } else {
+        result.style.color = 'var(--success)';
+        result.textContent = `Deleted ${d.deleted} file(s), freed ${freed}. ${d.kept} image(s) kept.`;
+        toast(`Cleaned ${d.deleted} image(s) — ${freed} freed`, 'success');
+      }
+    } catch (e) {
+      toast('Cleanup error: ' + e.message, 'error');
+    } finally {
+      setBusyButton(btn, false);
+    }
+  });
+
   $('killSwitchBtn')?.addEventListener('click', () => {
     $('killModal').style.display = 'flex';
   });
