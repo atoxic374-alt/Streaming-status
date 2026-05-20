@@ -497,8 +497,55 @@ function getPublicBaseUrl(req) {
   return `${proto}://${host}`;
 }
 
+// ── Discord CDN Upload ─────────────────────────────────────────────
+// Uploads image buffer to Discord CDN via DM-to-self so the URL is
+// publicly accessible by Discord's servers (needed for Rich Presence).
+async function uploadToDiscordCDN(imageBuffer, mimeType, fileName) {
+  const tokens = extractTokens();
+  if (!tokens.length) return null;
+  const token = tokens[0];
+  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0 Safari/537.36';
+  try {
+    // 1. Get own user ID
+    const meR = await fetch('https://discord.com/api/v10/users/@me', {
+      headers: { Authorization: token, 'User-Agent': ua },
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!meR.ok) return null;
+    const me = await meR.json();
+
+    // 2. Open DM channel with self
+    const dmR = await fetch('https://discord.com/api/v10/users/@me/channels', {
+      method: 'POST',
+      headers: { Authorization: token, 'Content-Type': 'application/json', 'User-Agent': ua },
+      body: JSON.stringify({ recipient_id: me.id }),
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!dmR.ok) return null;
+    const dm = await dmR.json();
+
+    // 3. Send image as attachment
+    const form = new FormData();
+    form.append('files[0]', new Blob([imageBuffer], { type: mimeType }), fileName);
+    form.append('payload_json', JSON.stringify({ content: '' }));
+
+    const msgR = await fetch(`https://discord.com/api/v10/channels/${dm.id}/messages`, {
+      method: 'POST',
+      headers: { Authorization: token, 'User-Agent': ua },
+      body: form,
+      signal: AbortSignal.timeout(20000)
+    });
+    if (!msgR.ok) return null;
+    const msg = await msgR.json();
+    return msg.attachments?.[0]?.url || null;
+  } catch (e) {
+    appendLog(`[Upload] Discord CDN upload failed: ${e.message}`, true);
+    return null;
+  }
+}
+
 // ── API: Image Attachments ─────────────────────────────────────────
-app.post('/api/uploads', (req, res) => {
+app.post('/api/uploads', async (req, res) => {
   const { name, dataUrl } = req.body || {};
   const match = String(dataUrl || '').match(/^data:image\/(png|jpe?g|gif|webp|avif);base64,([a-z0-9+/=\s]+)$/i);
   if (!match) return res.status(400).json({ error: 'invalid image attachment' });
@@ -518,9 +565,18 @@ app.post('/api/uploads', (req, res) => {
   const filePath = path.join(PATHS.uploads, fileName);
   fs.writeFileSync(filePath, data);
 
+  // Try uploading to Discord CDN so it's publicly accessible for Rich Presence
+  const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+  const cdnUrl = await uploadToDiscordCDN(data, mimeType, fileName);
+  if (cdnUrl) {
+    appendLog(`[Upload] Rich Presence image attached: ${fileName}`);
+    return res.json({ ok: true, url: cdnUrl, cdn: true });
+  }
+
+  // Fallback: local URL (works only when server is publicly reachable)
   const url = `${getPublicBaseUrl(req)}/uploads/${encodeURIComponent(fileName)}`;
-  appendLog(`[Upload] Rich Presence image attached: ${fileName}`);
-  res.json({ ok: true, url });
+  appendLog(`[Upload] Rich Presence image attached (local): ${fileName}`);
+  res.json({ ok: true, url, cdn: false });
 });
 
 // ── API: Custom Status Emojis ──────────────────────────────────────

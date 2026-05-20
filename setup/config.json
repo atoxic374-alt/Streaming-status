@@ -4,47 +4,61 @@
   },
   "config": {
     "options": {
-      "watch-url": [],
+      "watch-url": [
+        "https://www.youtube.com/watch?v=HuFZX0LB29g"
+      ],
       "timestamp": "{start}",
       "humanMode": true,
       "humanJitter": 0.25,
       "idleChance": 0.04,
       "idleMinSec": 60,
       "idleMaxSec": 240,
-      "botid": "",
-      "activity-name": "",
+      "botid": "1506454184424378408",
+      "activity-name": "Jj",
       "activity-type": "STREAMING",
       "strictVerify": true,
-      "status": "online",
-      "presence-status": "online",
+      "status": "dnd",
+      "presence-status": "dnd",
       "requireGatewayEcho": false
     },
-    "text-1": [],
-    "text-2": [],
-    "text-3": [],
-    "text-4": [],
-    "bigimg": [],
-    "smallimg": [],
+    "text-1": [
+      "Aa"
+    ],
+    "text-2": [
+      "Ko"
+    ],
+    "text-3": [
+      "Lp"
+    ],
+    "text-4": [
+      "Ll"
+    ],
+    "bigimg": [
+      "https://b4faa23a-2067-473c-a892-8eea9f71ce19-00-16lfglxpo2ef.spock.replit.dev/uploads/1779237796756-a7003c72-6a55667a9665bb95e148cf16433d76f1.jpg"
+    ],
+    "smallimg": [
+      "https://b4faa23a-2067-473c-a892-8eea9f71ce19-00-16lfglxpo2ef.spock.replit.dev/uploads/1779237808052-19fab552-8be535de56f3204cfd2e58e9dca4742b.jpg"
+    ],
     "button-1": [],
     "button-2": [],
     "spotify": {
-      "enabled": false,
+      "enabled": true,
       "tracks": [
         {
-          "song": "",
-          "artist": "",
+          "song": "Bb",
+          "artist": "Yy",
           "duration": 210,
-          "albumArtUrl": "",
+          "albumArtUrl": "https://b4faa23a-2067-473c-a892-8eea9f71ce19-00-16lfglxpo2ef.spock.replit.dev/uploads/1779237919677-de6afb2e-6a55667a9665bb95e148cf16433d76f1.jpg",
           "albumArtId": "",
           "songId": "",
           "albumId": "",
           "artistIds": ""
         }
       ],
-      "song": "",
-      "artist": "",
+      "song": "Bb",
+      "artist": "Yy",
       "duration": 210,
-      "albumArtUrl": ""
+      "albumArtUrl": "https://b4faa23a-2067-473c-a892-8eea9f71ce19-00-16lfglxpo2ef.spock.replit.dev/uploads/1779237919677-de6afb2e-6a55667a9665bb95e148cf16433d76f1.jpg"
     },
     "customStatus": {
       "enabled": false,
