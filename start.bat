@@ -44,10 +44,12 @@ if not exist "%~dp0node_modules" (
 :: ── Launch dashboard ────────────────────────────────────────────────
 echo  [OK] Starting StreamDash server...
 echo  [OK] Browser will open automatically.
+echo  [OK] Port switches automatically if 5000 is busy.
 echo.
 echo  ──────────────────────────────────────────
-echo   Dashboard: http://localhost:5000
-echo   Press Ctrl+C to stop the server
+echo   Default port : 5000
+echo   Auto-switch  : 5001, 5002 ... if busy
+echo   Press Ctrl+C : to stop the server
 echo  ──────────────────────────────────────────
 echo.
 
