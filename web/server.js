@@ -17,8 +17,10 @@ const wss = new WebSocketServer({ server: httpServer });
 const BASE_PORT = process.env.PORT || 5000;
 const ROOT = path.join(__dirname, '..');
 
-// On Replit the proxy needs 0.0.0.0; locally bind to 127.0.0.1 only
-const BIND_HOST = process.env.REPLIT_DEV_DOMAIN ? '0.0.0.0' : '127.0.0.1';
+// Bind to 0.0.0.0 on Replit or any remote host (REMOTE=1), else localhost only
+const IS_REMOTE  = !!(process.env.REPLIT_DEV_DOMAIN || process.env.REMOTE);
+const BIND_HOST  = IS_REMOTE ? '0.0.0.0' : '127.0.0.1';
+if (IS_REMOTE) process.env.NO_AUTO_OPEN = '1'; // no browser on remote servers
 
 function openBrowser(url) {
   const platform = process.platform;
