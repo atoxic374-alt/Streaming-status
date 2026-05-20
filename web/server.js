@@ -1078,6 +1078,204 @@ async function refreshCdnUrl(fileName) {
   return newUrl;
 }
 
+// ── Batch CDN upload: up to 10 files in ONE Discord message ──────
+// items: [{ buffer, mimeType, fileName }]
+// Returns: [{ url: string|null, fileName }] — same order as input
+async function uploadBatchToDiscordCDN(items, options = {}) {
+  if (!items.length) return [];
+  const capped = items.slice(0, 10); // Discord hard limit
+
+  const log  = (msg) => appendLog(`[Batch]   ${msg}`);
+  const logOk = (msg) => appendLog(`[Batch] ✓ ${msg}`);
+  const logErr = (msg) => appendLog(`[Batch] ✗ ${msg}`, true);
+
+  const target = uploadTargetConfigFromEnv();
+  const selected = await selectUploadToken(target.accountId);
+  if (selected.error) {
+    logErr(`Upload account check: ${selected.error}`);
+    return capped.map(i => ({ url: null, fileName: i.fileName }));
+  }
+
+  const token = selected.token;
+
+  // ── Session (shared for all files in this batch) ──────────────
+  const targetKey = uploadTargetKey(target);
+  let session = getCdnSession(token, targetKey);
+  if (!session) {
+    const result = await buildCdnSession(token);
+    if (result.error) {
+      logErr(`Session: ${result.error}`);
+      return capped.map(i => ({ url: null, fileName: i.fileName }));
+    }
+    session = result.session;
+    logOk(`Login: ${session.username} → ${session.destination}`);
+  } else {
+    logOk(`Session cached → ${session.destination}`);
+  }
+
+  // ── Natural pacing since last upload ─────────────────────────
+  const lastUpload = _lastCdnUploadAt.get(session.targetKey) || 0;
+  const elapsed = Date.now() - lastUpload;
+  const minGap = 1200 + Math.random() * 800;
+  if (elapsed < minGap && lastUpload > 0) {
+    await sleep(Math.round(minGap - elapsed));
+  }
+
+  // ── Human compose: simulate attaching multiple files ──────────
+  const referer = session.referer || `https://discord.com/channels/@me/${session.channelId}`;
+  await simulateTyping(session.channelId, token);
+  // slightly longer compose for multiple files (user picks them one by one)
+  await humanDelay(900 + capped.length * 200, 1800 + capped.length * 300);
+
+  // ── Build multipart form with all files ───────────────────────
+  const form = new FormData();
+  capped.forEach((item, idx) => {
+    form.append(`files[${idx}]`, new Blob([item.buffer], { type: item.mimeType }), item.fileName);
+  });
+  form.append('payload_json', JSON.stringify({ content: '' }));
+
+  const uploadHeaders = buildHumanHeaders(token, referer);
+  delete uploadHeaders['Content-Type'];
+
+  log(`Sending ${capped.length} file(s) in one message…`);
+
+  let msgR, attempt = 0;
+  while (true) {
+    attempt++;
+    msgR = await fetch(`https://discord.com/api/v10/channels/${session.channelId}/messages`, {
+      method: 'POST',
+      headers: uploadHeaders,
+      body: form,
+      signal: AbortSignal.timeout(60000),
+    });
+    if (msgR.status === 429 && attempt <= 4) {
+      const rl = await msgR.json().catch(() => ({}));
+      const wait = Math.ceil((rl.retry_after || 2) * 1000) + 300;
+      log(`Rate limited — waiting ${(wait / 1000).toFixed(1)} s (attempt ${attempt}/4)…`);
+      await sleep(wait);
+      continue;
+    }
+    break;
+  }
+
+  if (!msgR.ok) {
+    const err = await msgR.json().catch(() => ({}));
+    logErr(`HTTP ${msgR.status} — ${err.message || 'upload rejected'}`);
+    return capped.map(i => ({ url: null, fileName: i.fileName }));
+  }
+
+  const msg = await msgR.json();
+  const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
+  _lastCdnUploadAt.set(session.targetKey, Date.now());
+
+  logOk(`${attachments.length}/${capped.length} attachment(s) received`);
+
+  // Match returned attachments back to input by filename
+  return capped.map(item => {
+    const att = attachments.find(a => a.filename === item.fileName) || attachments[capped.indexOf(item)];
+    const url = att?.url || null;
+    if (url) {
+      const ex = new URL(url).searchParams.get('ex');
+      const expiry = ex ? new Date(parseInt(ex, 16) * 1000).toLocaleString() : 'unknown';
+      logOk(`${item.fileName} → CDN ready (expires ${expiry})`);
+    } else {
+      logErr(`${item.fileName} → no attachment returned`);
+    }
+    return { url, fileName: item.fileName };
+  });
+}
+
+// ── API: Batch Image Upload ────────────────────────────────────────
+// POST /api/uploads/batch  { items: [{name, dataUrl}] }
+// Uploads up to 10 images in ONE Discord message. Returns per-item results.
+app.post('/api/uploads/batch', async (req, res) => {
+  const rawItems = Array.isArray(req.body?.items) ? req.body.items : [];
+  if (!rawItems.length) return res.status(400).json({ error: 'items array is required' });
+  if (rawItems.length > 10) return res.status(400).json({ error: 'Max 10 images per batch (Discord limit)' });
+
+  ensureDir(PATHS.uploads);
+  const manifest = loadManifest();
+  const results = [];
+  const toUpload = []; // items that actually need CDN upload (not deduped)
+
+  const magic = { png: [0x89,0x50,0x4e,0x47], jpg: [0xff,0xd8,0xff], gif: [0x47,0x49,0x46], webp: [0x52,0x49,0x46,0x46] };
+
+  // ── Phase 1: validate, save locally, dedup check ─────────────
+  for (let i = 0; i < rawItems.length; i++) {
+    const { name, dataUrl } = rawItems[i] || {};
+    const match = String(dataUrl || '').match(/^data:image\/(png|jpe?g|gif|webp|avif);base64,([a-z0-9+/=\s]+)$/i);
+    if (!match) {
+      results[i] = { ok: false, error: 'Invalid image format — must be PNG, JPG, GIF, WebP, or AVIF', index: i };
+      continue;
+    }
+
+    const ext = match[1].toLowerCase().replace('jpeg', 'jpg');
+    const data = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
+
+    if (!data.length || data.length > 8 * 1024 * 1024) {
+      results[i] = { ok: false, error: data.length ? 'Image too large — max 8 MB' : 'Image data is empty', index: i };
+      continue;
+    }
+
+    const header = magic[ext] || magic.png;
+    if (ext !== 'avif' && !header.every((b, j) => data[j] === b)) {
+      results[i] = { ok: false, error: `File does not appear to be a valid ${ext.toUpperCase()}`, index: i };
+      continue;
+    }
+
+    const imageHash = crypto.createHash('sha256').update(data).digest('hex');
+    const safeName = String(name || `asset.${ext}`).replace(/[^a-z0-9._-]/gi, '-').slice(-80);
+    const normalizedName = safeName.toLowerCase().endsWith(`.${ext}`) ? safeName : `${safeName}.${ext}`;
+    const fileName = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${normalizedName}`;
+    const filePath = path.join(PATHS.uploads, fileName);
+    fs.writeFileSync(filePath, data);
+
+    const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+
+    // Dedup check
+    const existing = Object.values(manifest).find(e =>
+      e?.sha256 === imageHash && e?.cdnUrl && !isExpiredCdnUrl(e.cdnUrl));
+
+    if (existing) {
+      const entry = { fileName, filePath, cdnUrl: existing.cdnUrl, mimeType, sha256: imageHash, uploadedAt: Date.now(), dedupedFrom: existing.fileName || null };
+      manifest[fileName] = entry;
+      manifest[cdnUrlKey(existing.cdnUrl)] = entry;
+      appendLog(`[Batch] Dedup [${i+1}/${rawItems.length}] ${fileName}`);
+      results[i] = { ok: true, url: existing.cdnUrl, cdn: true, deduped: true, fileName, index: i };
+      continue;
+    }
+
+    // Needs real upload
+    toUpload.push({ index: i, data, mimeType, fileName, filePath, imageHash });
+  }
+
+  saveManifest(manifest);
+
+  // ── Phase 2: batch upload non-deduped items ───────────────────
+  if (toUpload.length) {
+    appendLog(`[Batch] Uploading ${toUpload.length} new image(s) in one message…`);
+    const uploadItems = toUpload.map(t => ({ buffer: t.data, mimeType: t.mimeType, fileName: t.fileName }));
+    const uploadResults = await uploadBatchToDiscordCDN(uploadItems, {});
+
+    const freshManifest = loadManifest();
+    for (let j = 0; j < toUpload.length; j++) {
+      const t = toUpload[j];
+      const cdnUrl = uploadResults[j]?.url || null;
+      const entry = { fileName: t.fileName, filePath: t.filePath, cdnUrl, mimeType: t.mimeType, sha256: t.imageHash, uploadedAt: Date.now() };
+      freshManifest[t.fileName] = entry;
+      if (cdnUrl) freshManifest[cdnUrlKey(cdnUrl)] = entry;
+      results[t.index] = { ok: !!cdnUrl, url: cdnUrl || null, cdn: !!cdnUrl, fileName: t.fileName, index: t.index,
+        ...(cdnUrl ? {} : { error: 'Upload failed — check token and upload target' }) };
+    }
+    saveManifest(freshManifest);
+  }
+
+  const allOk = results.every(r => r?.ok);
+  const successCount = results.filter(r => r?.ok).length;
+  appendLog(`[Batch] Done — ${successCount}/${rawItems.length} uploaded successfully`);
+  res.json({ ok: allOk, total: rawItems.length, succeeded: successCount, results });
+});
+
 // ── API: Image Upload ─────────────────────────────────────────────
 app.post('/api/uploads', async (req, res) => {
   const { name, dataUrl } = req.body || {};
