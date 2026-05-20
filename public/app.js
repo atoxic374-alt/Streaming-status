@@ -85,6 +85,7 @@ const API = {
   import:      '/api/import',
   ratelimits:  '/api/ratelimits',
   upload:      '/api/uploads',
+  uploadBatch: '/api/uploads/batch',
   checkImages: '/api/uploads/check',
   emojis:      '/api/emojis',
 };
@@ -1359,11 +1360,49 @@ function showUploadStatus(fileName, result) {
   if (success) setTimeout(() => { panel.style.display = 'none'; }, 9000);
 }
 
+// ── Show batch upload result summary in the upload status panel ───
+function showBatchUploadStatus(results) {
+  const panel = $('imageUploadStatus');
+  const icon  = $('imageUploadStatusIcon');
+  const title = $('imageUploadStatusTitle');
+  const steps = $('imageUploadSteps');
+  if (!panel || !steps) return;
+
+  const succeeded = results.filter(r => r?.ok && r?.url);
+  const failed    = results.filter(r => !r?.ok);
+  const deduped   = results.filter(r => r?.deduped);
+  const allOk     = failed.length === 0;
+
+  icon.textContent = allOk ? '✓' : succeeded.length > 0 ? '⚠' : '✗';
+  icon.className   = allOk ? 'status-icon ok' : succeeded.length > 0 ? 'status-icon warn' : 'status-icon error';
+  title.textContent = allOk
+    ? `${succeeded.length} image(s) ready on Discord CDN${deduped.length ? ` (${deduped.length} reused)` : ''}`
+    : `${succeeded.length} succeeded · ${failed.length} failed`;
+
+  steps.innerHTML = results.map(r => {
+    const cls  = r.ok ? 'ok' : 'error';
+    const dot  = r.ok ? '✓' : '✗';
+    const name = r.fileName ? r.fileName.replace(/^\d+-[a-f0-9]+-/, '') : `Image ${(r.index ?? 0) + 1}`;
+    const detail = r.ok
+      ? (r.deduped ? 'Reused existing CDN URL' : 'CDN URL ready')
+      : (r.error || 'Upload failed');
+    return `<div class="upload-step ${cls}">
+      <span class="step-dot">${dot}</span>
+      <span class="step-name">${escHtml(name)}</span>
+      <span class="step-detail">${escHtml(detail)}</span>
+    </div>`;
+  }).join('');
+
+  panel.className    = `upload-status ${allOk ? 'ok' : failed.length > 0 && succeeded.length === 0 ? 'error' : 'warn'}`;
+  panel.style.display = 'block';
+  if (allOk) setTimeout(() => { panel.style.display = 'none'; }, 9000);
+}
+
 async function uploadImages(files, key) {
   const list = Array.from(files || []);
   if (!list.length) return;
 
-  // Filter valid files first so the progress counter is accurate
+  // ── Validate files client-side first ────────────────────────────
   const valid = list.filter(f => {
     const mime = guessMime(f);
     if (!mime) { toast(`"${f.name}" — unsupported type. Use PNG, JPG, GIF, WebP, or AVIF`, 'error'); return false; }
@@ -1372,64 +1411,138 @@ async function uploadImages(files, key) {
   });
   if (!valid.length) return;
 
-  const total = valid.length;
+  const total     = valid.length;
   const humanMode = $('humanModeEnabled')?.checked !== false;
+
   setUploadBusy(+1, 1, total);
+  setImageQueueProgress({ fileName: valid[0].name, current: 1, total, percent: 5, stage: 'Reading files…' });
+
   try {
-    for (let i = 0; i < valid.length; i++) {
-      const file = valid[i];
-      setUploadBusy(0, i + 1, total);          // update progress counter
-      const mime = guessMime(file);
-      let drift = null;
-      try {
-        setImageQueueProgress({ fileName: file.name, current: i + 1, total, percent: 8, stage: 'Reading local file…' });
-        const dataUrl = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload  = () => resolve(reader.result);
-          reader.onerror = () => reject(new Error('Could not read file'));
-          reader.readAsDataURL(file);
-        });
-        setImageQueueProgress({ fileName: file.name, current: i + 1, total, percent: 28, stage: 'Preparing image payload…' });
-        // Ensure correct MIME in the data URL (critical for GIF)
-        const fixedDataUrl = dataUrl.replace(/^data:([^;]+);base64,/, `data:${mime};base64,`);
-        drift = startProgressDrift(
-          file.name,
-          i + 1,
-          total,
-          42,
-          88,
-          humanMode ? 'Saving through Human mode image queue…' : 'Saving locally and requesting CDN URL…'
-        );
-        const r = await post(API.upload, { name: file.name, dataUrl: fixedDataUrl, humanMode });
-        if (drift) clearInterval(drift);
-        showUploadStatus(file.name, r);
-        if (r.ok && r.url) {
-          setImageQueueProgress({ fileName: file.name, current: i + 1, total, percent: 100, stage: r.deduped ? 'Reused existing CDN URL' : 'CDN URL ready' });
-          S.fields[key].push(r.url);
-          if (r.cdn) toast(`"${file.name}" ready on Discord CDN`, 'success');
-          else toast(r.warning || 'Saved locally — add a token for CDN upload', 'warn');
-        } else {
-          setImageQueueProgress({ fileName: file.name, current: i + 1, total, percent: 100, stage: 'Upload failed' });
-          toast(r.error || 'Upload failed', 'error');
-        }
-        await sleep(650);
-      } catch (e) {
-        if (drift) clearInterval(drift);
-        setImageQueueProgress({ fileName: file.name, current: i + 1, total, percent: 100, stage: 'Upload failed' });
-        showUploadStatus(file.name, { ok: false, steps: [{ step: 'Read file', status: 'error', detail: e.message }] });
-        toast(e.message || 'Upload failed', 'error');
-      }
-      if (i < valid.length - 1) {
+    // ── Phase 1: Read ALL files concurrently ──────────────────────
+    const readItems = await Promise.all(valid.map((file, idx) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => {
+        const mime = guessMime(file);
+        const raw  = reader.result;
+        const fixedDataUrl = raw.replace(/^data:([^;]+);base64,/, `data:${mime};base64,`);
+        resolve({ file, mime, dataUrl: fixedDataUrl, index: idx });
+      };
+      reader.onerror = () => reject(new Error(`Could not read "${file.name}"`));
+      reader.readAsDataURL(file);
+    })));
+
+    setImageQueueProgress({
+      fileName: `${total} image${total > 1 ? 's' : ''}`,
+      current: 1, total: 1, percent: 20,
+      stage: humanMode
+        ? 'Human simulation: opening Discord, navigating to channel…'
+        : 'Preparing upload payload…'
+    });
+
+    // ── Phase 2: Split into chunks of 10 (Discord limit) ─────────
+    const CHUNK = 10;
+    const chunks = [];
+    for (let i = 0; i < readItems.length; i += CHUNK) chunks.push(readItems.slice(i, i + CHUNK));
+
+    const allResults = [];
+
+    for (let ci = 0; ci < chunks.length; ci++) {
+      const chunk  = chunks[ci];
+      const isLast = ci === chunks.length - 1;
+      const chunkLabel = chunks.length > 1 ? ` (batch ${ci + 1}/${chunks.length})` : '';
+
+      setUploadBusy(0, ci + 1, chunks.length);
+
+      // Human simulation stage labels
+      const stages = humanMode ? [
+        'Human simulation: attaching files to message…',
+        'Human simulation: typing indicator → composing…',
+        'Human simulation: sending to Discord CDN…',
+      ] : [
+        'Uploading to Discord CDN…',
+      ];
+
+      let stageIdx = 0;
+      const drift = setInterval(() => {
+        const pct = Math.min(88, 28 + Math.round(((Date.now() % 6000) / 6000) * 55));
         setImageQueueProgress({
-          fileName: valid[i + 1].name,
-          current: i + 2,
-          total,
-          percent: 0,
-          stage: humanMode ? 'Human mode queue pause before next image…' : 'Waiting before next image…'
+          fileName: chunk.length === 1 ? chunk[0].file.name : `${chunk.length} images${chunkLabel}`,
+          current: ci + 1, total: chunks.length, percent: pct,
+          stage: stages[stageIdx++ % stages.length],
         });
-        await sleep(humanMode ? 800 : 500);
+      }, humanMode ? 1100 : 900);
+
+      let chunkResults;
+      try {
+        // Build items array for the batch endpoint
+        const items = chunk.map(item => ({ name: item.file.name, dataUrl: item.dataUrl }));
+        const r = await post(API.uploadBatch, { items });
+
+        clearInterval(drift);
+
+        if (r.ok || Array.isArray(r.results)) {
+          chunkResults = Array.isArray(r.results) ? r.results : [];
+        } else {
+          // Batch endpoint error — mark all as failed
+          chunkResults = chunk.map((item, j) => ({
+            ok: false, error: r.error || 'Batch upload failed',
+            fileName: item.file.name, index: item.index,
+          }));
+        }
+      } catch (e) {
+        clearInterval(drift);
+        chunkResults = chunk.map(item => ({
+          ok: false, error: e.message || 'Network error',
+          fileName: item.file.name, index: item.index,
+        }));
+      }
+
+      // Apply results to state
+      for (let j = 0; j < chunk.length; j++) {
+        const res = chunkResults[j] || { ok: false, error: 'No result returned' };
+        allResults.push({ ...res, fileName: res.fileName || chunk[j].file.name });
+        if (res.ok && res.url) S.fields[key].push(res.url);
+      }
+
+      // Progress: batch done
+      const succeeded = chunkResults.filter(r => r?.ok).length;
+      const failed    = chunkResults.filter(r => !r?.ok).length;
+      setImageQueueProgress({
+        fileName: chunk.length === 1 ? chunk[0].file.name : `${chunk.length} images${chunkLabel}`,
+        current: ci + 1, total: chunks.length, percent: 100,
+        stage: failed === 0
+          ? `${succeeded} image${succeeded > 1 ? 's' : ''} ready on CDN`
+          : `${succeeded} succeeded · ${failed} failed`,
+      });
+
+      // Natural pause between chunks (human simulation)
+      if (!isLast) {
+        setImageQueueProgress({
+          fileName: `Next batch…`,
+          current: ci + 2, total: chunks.length, percent: 0,
+          stage: humanMode ? 'Human simulation: natural pause between batches…' : 'Preparing next batch…',
+        });
+        await sleep(humanMode ? 1800 : 800);
       }
     }
+
+    // ── Phase 3: Show summary ─────────────────────────────────────
+    showBatchUploadStatus(allResults);
+    const okCount   = allResults.filter(r => r?.ok).length;
+    const failCount = allResults.filter(r => !r?.ok).length;
+    const dedupCount = allResults.filter(r => r?.deduped).length;
+
+    if (okCount > 0) {
+      const msg = okCount === total
+        ? `${okCount} image${okCount > 1 ? 's' : ''} ready on Discord CDN${dedupCount ? ` (${dedupCount} reused)` : ''}`
+        : `${okCount}/${total} images uploaded — ${failCount} failed`;
+      toast(msg, failCount > 0 ? 'warn' : 'success');
+    } else {
+      toast(allResults[0]?.error || 'All uploads failed — check token & upload target', 'error');
+    }
+
+  } catch (e) {
+    toast(e.message || 'Upload failed', 'error');
   } finally {
     setUploadBusy(-1);
     setImageQueueProgress({ done: true });
