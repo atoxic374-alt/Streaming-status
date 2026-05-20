@@ -1,5 +1,36 @@
 'use strict';
 
+// ── Upload busy lock — blocks Start until all uploads complete ─────
+let _uploadsBusy = 0;
+
+function setUploadBusy(delta) {
+  _uploadsBusy = Math.max(0, _uploadsBusy + delta);
+  const btn    = $('startBtn');
+  const notice = $('uploadBusyNotice');
+  if (!btn) return;
+  if (_uploadsBusy > 0) {
+    btn.disabled = true;
+    btn.classList.add('upload-busy');
+    btn.setAttribute('title', 'Waiting for images to finish uploading…');
+    if (notice) notice.style.display = 'flex';
+  } else {
+    btn.disabled = false;
+    btn.classList.remove('upload-busy');
+    btn.removeAttribute('title');
+    if (notice) notice.style.display = 'none';
+  }
+}
+
+// ── Resolve MIME type — fallback to extension for GIF/etc ─────────
+function guessMime(file) {
+  if (file.type && file.type.startsWith('image/')) return file.type;
+  const ext = (file.name || '').split('.').pop().toLowerCase();
+  return (
+    { gif: 'image/gif', png: 'image/png', jpg: 'image/jpeg',
+      jpeg: 'image/jpeg', webp: 'image/webp', avif: 'image/avif' }[ext] || ''
+  );
+}
+
 // ── API Endpoints ──────────────────────────────────────────────────
 const API = {
   settings:    '/api/settings',
@@ -1199,39 +1230,52 @@ function showUploadStatus(fileName, result) {
 async function uploadImages(files, key) {
   const list = Array.from(files || []);
   if (!list.length) return;
-  for (const file of list) {
-    if (!file.type.startsWith('image/')) {
-      toast('Only image files are supported (PNG, JPG, GIF, WebP)', 'error');
-      continue;
-    }
-    if (file.size > 8 * 1024 * 1024) {
-      toast(`"${file.name}" is too large — max 8 MB`, 'error');
-      continue;
-    }
-    try {
-      const dataUrl = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload  = () => resolve(reader.result);
-        reader.onerror = () => reject(new Error('Could not read file'));
-        reader.readAsDataURL(file);
-      });
-      const r = await post(API.upload, { name: file.name, dataUrl });
-      showUploadStatus(file.name, r);
-      if (r.ok && r.url) {
-        S.fields[key].push(r.url);
-        if (r.cdn) toast(`"${file.name}" ready on Discord CDN`, 'success');
-        else toast(r.warning || 'Saved locally — add a token for CDN upload', 'warn');
-      } else {
-        toast(r.error || 'Upload failed', 'error');
+
+  setUploadBusy(+1);
+  try {
+    for (const file of list) {
+      const mime = guessMime(file);
+      if (!mime) {
+        toast(`"${file.name}" — unsupported type. Use PNG, JPG, GIF, WebP, or AVIF`, 'error');
+        continue;
       }
-    } catch (e) {
-      showUploadStatus(file.name, { ok: false, steps: [{ step: 'Read file', status: 'error', detail: e.message }] });
-      toast(e.message || 'Upload failed', 'error');
+      if (file.size > 8 * 1024 * 1024) {
+        toast(`"${file.name}" is too large — max 8 MB`, 'error');
+        continue;
+      }
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload  = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('Could not read file'));
+          reader.readAsDataURL(file);
+        });
+        // Ensure dataUrl has the correct MIME type (important for GIFs whose
+        // file.type may be empty or wrong in some browsers)
+        const fixedDataUrl = dataUrl.replace(
+          /^data:([^;]+);base64,/,
+          `data:${mime};base64,`
+        );
+        const r = await post(API.upload, { name: file.name, dataUrl: fixedDataUrl });
+        showUploadStatus(file.name, r);
+        if (r.ok && r.url) {
+          S.fields[key].push(r.url);
+          if (r.cdn) toast(`"${file.name}" ready on Discord CDN`, 'success');
+          else toast(r.warning || 'Saved locally — add a token for CDN upload', 'warn');
+        } else {
+          toast(r.error || 'Upload failed', 'error');
+        }
+      } catch (e) {
+        showUploadStatus(file.name, { ok: false, steps: [{ step: 'Read file', status: 'error', detail: e.message }] });
+        toast(e.message || 'Upload failed', 'error');
+      }
     }
+  } finally {
+    setUploadBusy(-1);
+    resetPreviewRotation();
+    renderStreamEditors();
+    startPreviewRotation();
   }
-  resetPreviewRotation();
-  renderStreamEditors();
-  startPreviewRotation();
 }
 
 function addSpotifyTrack() {
@@ -1244,14 +1288,17 @@ function addSpotifyTrack() {
 async function uploadSpotifyArt(files, index = S.spotify.activeTrack) {
   const file = Array.from(files || [])[0];
   if (!file) return;
-  if (!file.type.startsWith('image/')) {
-    toast('Only image files are supported (PNG, JPG, GIF, WebP)', 'error');
+  const mime = guessMime(file);
+  if (!mime) {
+    toast(`"${file.name}" — unsupported type. Use PNG, JPG, GIF, or WebP`, 'error');
     return;
   }
   if (file.size > 8 * 1024 * 1024) {
     toast(`"${file.name}" is too large — max 8 MB`, 'error');
     return;
   }
+
+  setUploadBusy(+1);
   try {
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -1259,7 +1306,11 @@ async function uploadSpotifyArt(files, index = S.spotify.activeTrack) {
       reader.onerror = () => reject(new Error('Could not read file'));
       reader.readAsDataURL(file);
     });
-    const r = await post(API.upload, { name: file.name, dataUrl });
+    const fixedDataUrl = dataUrl.replace(
+      /^data:([^;]+);base64,/,
+      `data:${mime};base64,`
+    );
+    const r = await post(API.upload, { name: file.name, dataUrl: fixedDataUrl });
     showUploadStatus(file.name, r);
     if (r.ok && r.url) {
       S.spotify.activeTrack = Math.max(0, Math.min(Number(index) || 0, S.spotify.tracks.length - 1));
@@ -1275,6 +1326,8 @@ async function uploadSpotifyArt(files, index = S.spotify.activeTrack) {
   } catch (e) {
     showUploadStatus(file.name, { ok: false, steps: [{ step: 'Read file', status: 'error', detail: e.message }] });
     toast(e.message || 'Upload failed', 'error');
+  } finally {
+    setUploadBusy(-1);
   }
 }
 

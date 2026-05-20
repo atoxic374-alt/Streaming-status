@@ -675,6 +675,13 @@ code{font-family:monospace;font-size:11px;background:var(--bg-input);padding:1px
 .kill-actions{display:flex;gap:10px;width:100%;margin-top:4px}
 .kill-actions .btn{flex:1;justify-content:center}
 
+/* ── Upload Busy Notice (blocks Start button) ── */
+.upload-busy-notice{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--warning);background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.22);border-radius:7px;padding:5px 11px;white-space:nowrap}
+.upload-busy-spinner{width:12px;height:12px;border:2px solid rgba(251,191,36,.25);border-top-color:var(--warning);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+#startBtn.upload-busy{opacity:.45;cursor:not-allowed;pointer-events:none}
+#startBtn:disabled{opacity:.45;cursor:not-allowed}
+
 /* ── Image Upload Status Panel ── */
 .upload-status{margin-top:10px;border-radius:8px;border:1px solid var(--border-light);padding:10px 12px;background:var(--bg-card);animation:fadeIn .2s ease}
 .upload-status.ok   {border-color:rgba(74,222,128,.25);background:rgba(74,222,128,.04)}
