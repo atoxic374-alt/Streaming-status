@@ -49,6 +49,7 @@ const PATHS = {
   schedule: path.join(ROOT, 'setup', 'schedule.json'),
   env:      path.join(ROOT, '.env'),
   uploads:  path.join(ROOT, 'public', 'uploads'),
+  manifest: path.join(ROOT, 'public', 'uploads', 'manifest.json'),
 };
 const BOT_ENTRY = path.join(ROOT, 'index.js');
 
@@ -497,34 +498,78 @@ function getPublicBaseUrl(req) {
   return `${proto}://${host}`;
 }
 
-// ── Discord CDN Upload ─────────────────────────────────────────────
-// Uploads image buffer to Discord CDN via DM-to-self so the URL is
-// publicly accessible by Discord's servers (needed for Rich Presence).
+// ── Image Manifest ────────────────────────────────────────────────
+// Tracks local files → CDN URLs so expired CDN URLs can be refreshed.
+function loadManifest() { return readJSON(PATHS.manifest, {}); }
+function saveManifest(m) { fs.writeFileSync(PATHS.manifest, JSON.stringify(m, null, 2), 'utf8'); }
+
+// Returns the stable part of a Discord CDN URL (without the expiry query params)
+function cdnUrlKey(url) {
+  try { const u = new URL(url); return `${u.origin}${u.pathname}`; }
+  catch { return url; }
+}
+
+// Returns true if this Discord CDN attachment URL has expired
+function isExpiredCdnUrl(url) {
+  try {
+    if (!url || !url.includes('cdn.discordapp.com/attachments')) return false;
+    const ex = new URL(url).searchParams.get('ex');
+    if (!ex) return false;
+    return Date.now() > parseInt(ex, 16) * 1000;
+  } catch { return false; }
+}
+
+// Returns true if URL is a local server URL (Discord can't reach it)
+function isLocalUrl(url) {
+  try {
+    const h = new URL(url).hostname;
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1';
+  } catch { return false; }
+}
+
+// ── Discord CDN Upload (DM-to-self / Saved Messages) ─────────────
+// Discord's "DM to self" creates a Saved Messages channel — this is
+// a supported API feature used to get a publicly accessible CDN URL.
 async function uploadToDiscordCDN(imageBuffer, mimeType, fileName) {
   const tokens = extractTokens();
-  if (!tokens.length) return null;
+  if (!tokens.length) {
+    appendLog('[Image] No token — cannot upload to Discord CDN');
+    return null;
+  }
   const token = tokens[0];
   const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0 Safari/537.36';
+
+  appendLog(`[Image] Uploading "${fileName}" to Discord CDN…`);
+
   try {
-    // 1. Get own user ID
+    // ① Get own user info
     const meR = await fetch('https://discord.com/api/v10/users/@me', {
       headers: { Authorization: token, 'User-Agent': ua },
       signal: AbortSignal.timeout(8000)
     });
-    if (!meR.ok) return null;
+    if (!meR.ok) {
+      appendLog(`[Image] Auth check failed: HTTP ${meR.status} — is the token valid?`, true);
+      return null;
+    }
     const me = await meR.json();
+    appendLog(`[Image] Token verified: ${me.global_name || me.username}`);
 
-    // 2. Open DM channel with self
+    // ② Open "Saved Messages" DM channel with self
     const dmR = await fetch('https://discord.com/api/v10/users/@me/channels', {
       method: 'POST',
       headers: { Authorization: token, 'Content-Type': 'application/json', 'User-Agent': ua },
       body: JSON.stringify({ recipient_id: me.id }),
       signal: AbortSignal.timeout(8000)
     });
-    if (!dmR.ok) return null;
+    if (!dmR.ok) {
+      const err = await dmR.json().catch(() => ({}));
+      appendLog(`[Image] Failed to open Saved Messages: HTTP ${dmR.status} — ${err.message || 'unknown'}`, true);
+      return null;
+    }
     const dm = await dmR.json();
+    appendLog(`[Image] Saved Messages channel: ${dm.id}`);
 
-    // 3. Send image as attachment
+    // ③ Send image as file attachment
     const form = new FormData();
     form.append('files[0]', new Blob([imageBuffer], { type: mimeType }), fileName);
     form.append('payload_json', JSON.stringify({ content: '' }));
@@ -535,48 +580,151 @@ async function uploadToDiscordCDN(imageBuffer, mimeType, fileName) {
       body: form,
       signal: AbortSignal.timeout(20000)
     });
-    if (!msgR.ok) return null;
+    if (!msgR.ok) {
+      const err = await msgR.json().catch(() => ({}));
+      appendLog(`[Image] File send failed: HTTP ${msgR.status} — ${err.message || 'unknown'}`, true);
+      return null;
+    }
     const msg = await msgR.json();
-    return msg.attachments?.[0]?.url || null;
+    const cdnUrl = msg.attachments?.[0]?.url;
+    if (!cdnUrl) {
+      appendLog('[Image] No attachment URL in Discord response', true);
+      return null;
+    }
+
+    // Log expiry info (Discord CDN URLs expire after ~7 days)
+    const ex = new URL(cdnUrl).searchParams.get('ex');
+    const expiry = ex ? new Date(parseInt(ex, 16) * 1000).toLocaleString() : 'unknown';
+    appendLog(`[Image] CDN upload OK — expires: ${expiry}`);
+    return cdnUrl;
   } catch (e) {
-    appendLog(`[Upload] Discord CDN upload failed: ${e.message}`, true);
+    appendLog(`[Image] Upload error: ${e.message}`, true);
     return null;
   }
 }
 
-// ── API: Image Attachments ─────────────────────────────────────────
+// Re-uploads a local file to Discord CDN and refreshes the manifest
+async function refreshCdnUrl(fileName) {
+  const filePath = path.join(PATHS.uploads, fileName);
+  if (!fs.existsSync(filePath)) {
+    appendLog(`[Image] Refresh failed — local file missing: ${fileName}`, true);
+    return null;
+  }
+  const ext = path.extname(fileName).slice(1).replace('jpg', 'jpeg').replace('jpeg', 'jpeg') || 'png';
+  const mimeType = `image/${ext}`;
+  const data = fs.readFileSync(filePath);
+  appendLog(`[Image] CDN URL expired — re-uploading "${fileName}"…`);
+  const newUrl = await uploadToDiscordCDN(data, mimeType, fileName);
+  if (newUrl) {
+    const manifest = loadManifest();
+    const entry = Object.values(manifest).find(e => e.fileName === fileName);
+    if (entry) {
+      entry.cdnUrl = newUrl;
+      entry.refreshedAt = Date.now();
+      manifest[cdnUrlKey(newUrl)] = entry;
+    }
+    saveManifest(manifest);
+  }
+  return newUrl;
+}
+
+// ── API: Image Upload ─────────────────────────────────────────────
 app.post('/api/uploads', async (req, res) => {
   const { name, dataUrl } = req.body || {};
+
+  // ── Validate format
   const match = String(dataUrl || '').match(/^data:image\/(png|jpe?g|gif|webp|avif);base64,([a-z0-9+/=\s]+)$/i);
-  if (!match) return res.status(400).json({ error: 'invalid image attachment' });
+  if (!match) return res.status(400).json({ error: 'Invalid image — must be PNG, JPG, GIF, WebP, or AVIF' });
 
   const ext = match[1].toLowerCase().replace('jpeg', 'jpg');
   const data = Buffer.from(match[2].replace(/\s/g, ''), 'base64');
-  if (!data.length || data.length > 8 * 1024 * 1024) {
-    return res.status(400).json({ error: 'image must be 8MB or smaller' });
+
+  // ── Validate size (max 8 MB)
+  if (!data.length) return res.status(400).json({ error: 'Image data is empty' });
+  if (data.length > 8 * 1024 * 1024) return res.status(400).json({ error: 'Image too large — max 8 MB' });
+
+  // ── Validate magic bytes (basic image header check)
+  const magic = { png: [0x89,0x50,0x4e,0x47], jpg: [0xff,0xd8,0xff], gif: [0x47,0x49,0x46], webp: [0x52,0x49,0x46,0x46] };
+  const header = magic[ext] || magic.png;
+  const isValid = header.every((b, i) => data[i] === b);
+  if (!isValid && ext !== 'avif') {
+    appendLog(`[Image] Rejected — header mismatch for .${ext}`, true);
+    return res.status(400).json({ error: `File does not appear to be a valid ${ext.toUpperCase()}` });
   }
 
+  appendLog(`[Image] Received "${name || 'unnamed'}" (${(data.length / 1024).toFixed(1)} KB, .${ext})`);
+
+  // ── Save locally (always — used for CDN refresh if URL expires)
   ensureDir(PATHS.uploads);
-  const safeName = String(name || `asset.${ext}`)
-    .replace(/[^a-z0-9._-]/gi, '-')
-    .slice(-80);
-  const normalizedName = safeName.toLowerCase().endsWith(`.${ext}`) ? safeName : `${safeName || 'asset'}.${ext}`;
+  const safeName = String(name || `asset.${ext}`).replace(/[^a-z0-9._-]/gi, '-').slice(-80);
+  const normalizedName = safeName.toLowerCase().endsWith(`.${ext}`) ? safeName : `${safeName}.${ext}`;
   const fileName = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${normalizedName}`;
   const filePath = path.join(PATHS.uploads, fileName);
   fs.writeFileSync(filePath, data);
+  appendLog(`[Image] Saved locally: ${fileName}`);
 
-  // Try uploading to Discord CDN so it's publicly accessible for Rich Presence
+  // ── Upload to Discord CDN for a publicly accessible URL
   const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
   const cdnUrl = await uploadToDiscordCDN(data, mimeType, fileName);
+
+  const manifest = loadManifest();
+  let finalUrl;
+
   if (cdnUrl) {
-    appendLog(`[Upload] Rich Presence image attached: ${fileName}`);
-    return res.json({ ok: true, url: cdnUrl, cdn: true });
+    finalUrl = cdnUrl;
+    manifest[cdnUrlKey(cdnUrl)] = { fileName, filePath, cdnUrl, mimeType, uploadedAt: Date.now() };
+    saveManifest(manifest);
+    appendLog(`[Image] Ready — using Discord CDN URL`);
+    return res.json({ ok: true, url: finalUrl, cdn: true });
   }
 
-  // Fallback: local URL (works only when server is publicly reachable)
-  const url = `${getPublicBaseUrl(req)}/uploads/${encodeURIComponent(fileName)}`;
-  appendLog(`[Upload] Rich Presence image attached (local): ${fileName}`);
-  res.json({ ok: true, url, cdn: false });
+  // ── Fallback: local server URL (only reachable if server has public domain)
+  finalUrl = `${getPublicBaseUrl(req)}/uploads/${encodeURIComponent(fileName)}`;
+  manifest[fileName] = { fileName, filePath, cdnUrl: null, mimeType, localUrl: finalUrl, uploadedAt: Date.now() };
+  saveManifest(manifest);
+  appendLog(`[Image] Warning — no CDN URL, using local fallback (add a token first for Discord CDN upload)`);
+  res.json({ ok: true, url: finalUrl, cdn: false, warning: 'No token configured — image may not appear in Rich Presence when running locally' });
+});
+
+// ── API: Image URL Resolver (used by bot to refresh expired CDN URLs)
+// GET /api/uploads/resolve?url=<encoded_url>
+app.get('/api/uploads/resolve', async (req, res) => {
+  const url = String(req.query.url || '').trim();
+  if (!url) return res.status(400).json({ error: 'url param required' });
+
+  // Case 1: URL is from local server — return CDN URL from manifest if available
+  if (isLocalUrl(url)) {
+    const fileName = decodeURIComponent(url.split('/uploads/').pop() || '');
+    const manifest = loadManifest();
+    const entry = manifest[fileName] || Object.values(manifest).find(e => e.fileName === fileName);
+    if (entry?.cdnUrl && !isExpiredCdnUrl(entry.cdnUrl)) {
+      appendLog(`[Image] Resolved local URL to CDN: ${fileName}`);
+      return res.json({ url: entry.cdnUrl, refreshed: false });
+    }
+    if (entry?.fileName) {
+      const fresh = await refreshCdnUrl(entry.fileName);
+      if (fresh) return res.json({ url: fresh, refreshed: true });
+    }
+    appendLog(`[Image] Local URL unresolvable — no CDN entry for: ${fileName}`, true);
+    return res.json({ url, refreshed: false, warning: 'Could not resolve to CDN URL' });
+  }
+
+  // Case 2: Discord CDN URL that has expired — find in manifest and refresh
+  if (isExpiredCdnUrl(url)) {
+    appendLog(`[Image] Expired CDN URL detected — looking up manifest…`);
+    const key = cdnUrlKey(url);
+    const manifest = loadManifest();
+    const entry = manifest[key];
+    if (entry?.fileName) {
+      const fresh = await refreshCdnUrl(entry.fileName);
+      if (fresh) return res.json({ url: fresh, refreshed: true });
+    }
+    appendLog(`[Image] No manifest entry for expired URL — cannot refresh`, true);
+    return res.json({ url, refreshed: false, warning: 'Expired CDN URL — re-upload the image in settings' });
+  }
+
+  // Case 3: Valid, non-expired URL — use as-is
+  return res.json({ url, refreshed: false });
 });
 
 // ── API: Custom Status Emojis ──────────────────────────────────────

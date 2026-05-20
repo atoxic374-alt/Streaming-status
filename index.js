@@ -66,11 +66,57 @@ class GetImage {
     }
 
     isValidURL(url) {
+        try { new URL(url); return true; }
+        catch { return false; }
+    }
+
+    // Check if a Discord CDN attachment URL has expired
+    isExpiredCdnUrl(url) {
         try {
-            new URL(url);
-            return true;
-        } catch {
-            return false;
+            if (!url || !url.includes('cdn.discordapp.com/attachments')) return false;
+            const ex = new URL(url).searchParams.get('ex');
+            if (!ex) return false;
+            return Date.now() > parseInt(ex, 16) * 1000;
+        } catch { return false; }
+    }
+
+    // Check if URL is localhost (Discord servers can't reach it)
+    isLocalUrl(url) {
+        try {
+            const h = new URL(url).hostname;
+            return h === 'localhost' || h === '127.0.0.1' || h === '::1';
+        } catch { return false; }
+    }
+
+    // Ask the dashboard server to resolve a URL:
+    // - local URLs → get CDN URL from manifest
+    // - expired CDN URLs → re-upload and return fresh URL
+    // - valid URLs → returned unchanged
+    async resolveImageUrl(url) {
+        if (!url) return null;
+        const needsResolve = this.isLocalUrl(url) || this.isExpiredCdnUrl(url);
+        if (!needsResolve) return url;
+
+        const reason = this.isLocalUrl(url) ? 'local URL (unreachable by Discord)' : 'expired CDN URL';
+        console.log(`[Image] Resolving ${reason}: ${url.slice(0, 60)}…`.yellow);
+
+        try {
+            const port = process.env.PORT || 5000;
+            const r = await fetch(
+                `http://localhost:${port}/api/uploads/resolve?url=${encodeURIComponent(url)}`,
+                { signal: AbortSignal.timeout(25000) }
+            );
+            if (!r.ok) {
+                console.log(`[Image] Resolve endpoint returned HTTP ${r.status}`.red);
+                return url;
+            }
+            const data = await r.json();
+            if (data.warning) console.log(`[Image] Warning: ${data.warning}`.yellow);
+            if (data.refreshed) console.log(`[Image] URL refreshed from local backup`.cyan);
+            return data.url || url;
+        } catch (e) {
+            console.log(`[Image] Resolve error: ${e.message}`.red);
+            return url;
         }
     }
 
@@ -78,16 +124,24 @@ class GetImage {
         try {
             url1 = this.isValidURL(url1) ? url1 : null;
             url2 = this.isValidURL(url2) ? url2 : null;
-            if (!url1 && !url2) {
-                throw new Error("No Image");
-            }
+            if (!url1 && !url2) throw new Error("No Image");
+
+            console.log(`[Image] Resolving image URLs…`.grey);
+
+            // Resolve local / expired URLs before passing to Discord
+            [url1, url2] = await Promise.all([
+                this.resolveImageUrl(url1),
+                this.resolveImageUrl(url2),
+            ]);
+
+            if (!url1 && !url2) throw new Error("No Image after resolution");
 
             const { getExternal } = RichPresence;
             const requested = [url1, url2].filter(Boolean);
+            console.log(`[Image] Calling Discord external-assets API (${requested.length} image(s))`.grey);
+
             const images = await getExternal(this.client, applicationId || "1109522937989562409", ...requested);
-            if (!images.length) {
-                throw new Error("No Image");
-            }
+            if (!images.length) throw new Error("Discord returned no external asset paths");
 
             const resolve = (item) => item?.url?.includes("attachments") ? item.url : item?.external_asset_path;
             for (const image of images) {
@@ -95,8 +149,10 @@ class GetImage {
                 if (image.url === url2) url2 = resolve(image);
             }
 
+            console.log(`[Image] Images loaded OK`.green);
             return { bigImage: url1, smallImage: url2 };
-        } catch {
+        } catch (e) {
+            console.log(`[Image] Failed to load images: ${e.message}`.red);
             return { bigImage: null, smallImage: null };
         }
     }
