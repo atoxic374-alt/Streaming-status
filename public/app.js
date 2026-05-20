@@ -58,6 +58,7 @@ const API = {
   import:      '/api/import',
   ratelimits:  '/api/ratelimits',
   upload:      '/api/uploads',
+  checkImages: '/api/uploads/check',
   emojis:      '/api/emojis',
 };
 
@@ -1107,6 +1108,86 @@ function linePlaceholder(key) {
   return ({ text1: 'Details text', text2: 'State text', text3: 'Large image hover text', text4: 'Small image hover text' })[key] || 'Text';
 }
 
+// ── CDN image check ────────────────────────────────────────────────
+async function checkImages() {
+  const btn = $('checkImagesBtn');
+  if (btn) setBusyButton(btn, true, 'Checking…');
+  const checkPanel = $('imageCheckStatus');
+  if (checkPanel) checkPanel.style.display = 'none';
+
+  const allEntries = [
+    ...(S.fields.bigimg   || []).map(url => ({ url, key: 'bigimg'   })),
+    ...(S.fields.smallimg || []).map(url => ({ url, key: 'smallimg' })),
+  ].filter(x => x.url);
+
+  if (!allEntries.length) {
+    toast('No images configured to check', 'info');
+    if (btn) setBusyButton(btn, false, 'Check CDN');
+    return;
+  }
+
+  try {
+    const r = await post(API.checkImages, { urls: allEntries.map(x => x.url) });
+    const results = r.results || [];
+
+    // Apply refreshed/resolved URLs back into S.fields
+    let updated = 0;
+    for (const item of results) {
+      if (item.status === 'refreshed' && item.newUrl && item.newUrl !== item.url) {
+        for (const e of allEntries.filter(x => x.url === item.url)) {
+          const idx = (S.fields[e.key] || []).indexOf(item.url);
+          if (idx >= 0) { S.fields[e.key][idx] = item.newUrl; updated++; }
+        }
+      }
+    }
+    if (updated > 0) {
+      renderStreamEditors();
+      toast(`${updated} image URL(s) updated to fresh CDN links`, 'success');
+    }
+
+    showImageCheckResult(results);
+  } catch (e) {
+    toast(e.message || 'CDN check failed', 'error');
+  } finally {
+    if (btn) setBusyButton(btn, false, 'Check CDN');
+  }
+}
+
+function showImageCheckResult(results) {
+  const panel = $('imageCheckStatus');
+  const body  = $('imageCheckSteps');
+  const icon  = $('imageCheckStatusIcon');
+  const title = $('imageCheckStatusTitle');
+  if (!panel || !body) return;
+
+  const ok        = results.filter(r => r.status === 'ok' || r.status === 'external').length;
+  const refreshed = results.filter(r => r.status === 'refreshed').length;
+  const failed    = results.filter(r => ['error', 'expired', 'missing'].includes(r.status)).length;
+  const allGood   = failed === 0;
+
+  icon.textContent = allGood ? '✓' : failed > 0 ? '✗' : '⚠';
+  icon.className   = `status-icon ${allGood ? 'ok' : failed > 0 ? 'error' : 'warn'}`;
+  title.textContent = allGood
+    ? `All ${results.length} image(s) are ready on Discord CDN${refreshed ? ` (${refreshed} refreshed)` : ''}`
+    : `${failed} image(s) need re-uploading${refreshed ? ` · ${refreshed} fixed automatically` : ''}`;
+
+  body.innerHTML = results.map(item => {
+    const dot = { ok: '✓', external: '✓', refreshed: '↻', error: '✗', expired: '✗', missing: '✗' }[item.status] || '·';
+    const cls = ['ok','external'].includes(item.status) ? 'ok'
+              : item.status === 'refreshed' ? 'refreshed' : 'error';
+    const label = (item.newUrl || item.url || '').replace(/^https?:\/\//, '').slice(0, 55);
+    return `<div class="upload-step ${cls}">
+      <span class="step-dot">${dot}</span>
+      <span class="step-name" title="${escAttr(item.url || '')}">${escHtml(label)}</span>
+      <span class="step-detail">${escHtml(item.detail)}</span>
+    </div>`;
+  }).join('');
+
+  panel.className  = `upload-status ${allGood ? 'ok' : failed > 0 ? 'error' : 'warn'}`;
+  panel.style.display = 'block';
+  if (allGood) setTimeout(() => { panel.style.display = 'none'; }, 10000);
+}
+
 function renderImageRows(containerId, key) {
   const el = $(containerId); if (!el) return;
   const rows = S.fields[key] || [];
@@ -2061,6 +2142,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('addSmallTextBtn')?.addEventListener('click', () => addLine('text4'));
   $('addLargeImageBtn')?.addEventListener('click', () => $('largeImageUpload')?.click());
   $('addSmallImageBtn')?.addEventListener('click', () => $('smallImageUpload')?.click());
+  $('checkImagesBtn')?.addEventListener('click', checkImages);
   $('largeImageUpload')?.addEventListener('change', e => uploadImages(e.target.files, 'bigimg').then(() => { e.target.value = ''; }));
   $('smallImageUpload')?.addEventListener('change', e => uploadImages(e.target.files, 'smallimg').then(() => { e.target.value = ''; }));
   $('addCustomStatusBtn')?.addEventListener('click', addCustomStatusMessage);

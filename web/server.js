@@ -754,6 +754,68 @@ app.post('/api/uploads', async (req, res) => {
   res.json({ ok: true, url: finalUrl, cdn: false, steps: [saveStep, warnStep], warning: 'Add a token first so images upload to Discord CDN' });
 });
 
+// ── API: Image CDN Check — verifies + auto-refreshes all image URLs ──
+// POST /api/uploads/check  { urls: string[] }
+// Returns per-URL status: ok | refreshed | expired | missing | error | external
+app.post('/api/uploads/check', async (req, res) => {
+  const urls = Array.isArray(req.body?.urls) ? req.body.urls : [];
+  if (!urls.length) return res.json({ results: [] });
+
+  const manifest = loadManifest();
+  const results  = [];
+
+  for (const rawUrl of urls) {
+    const url = String(rawUrl || '').trim();
+    if (!url) continue;
+
+    // ── External (non-Discord, non-local) — user manages it themselves
+    if (!url.includes('cdn.discordapp.com') && !isLocalUrl(url)) {
+      results.push({ url, status: 'external', newUrl: url, detail: 'External URL — not managed by StreamDash' });
+      continue;
+    }
+
+    // ── Local server URL → try to resolve to CDN
+    if (isLocalUrl(url)) {
+      const fileName = decodeURIComponent(url.split('/uploads/').pop() || '');
+      const entry = manifest[fileName] || Object.values(manifest).find(e => e.fileName === fileName);
+      if (entry?.cdnUrl && !isExpiredCdnUrl(entry.cdnUrl)) {
+        results.push({ url, status: 'refreshed', newUrl: entry.cdnUrl, detail: 'Resolved local URL → existing CDN URL' });
+      } else if (entry?.fileName) {
+        const fresh = await refreshCdnUrl(entry.fileName);
+        results.push(fresh
+          ? { url, status: 'refreshed', newUrl: fresh,  detail: 'Re-uploaded from local file to CDN' }
+          : { url, status: 'error',     newUrl: null,   detail: 'Re-upload failed — check token configuration' });
+      } else {
+        results.push({ url, status: 'missing', newUrl: null, detail: 'File not tracked in manifest — re-upload manually' });
+      }
+      continue;
+    }
+
+    // ── Discord CDN URL: check expiry first
+    if (!isExpiredCdnUrl(url)) {
+      const entry = manifest[cdnUrlKey(url)];
+      results.push({ url, status: 'ok', newUrl: url,
+        detail: entry ? 'Valid CDN URL — tracked in manifest' : 'Valid CDN URL — externally managed' });
+      continue;
+    }
+
+    // ── Expired Discord CDN URL → find local copy + re-upload
+    const entry = manifest[cdnUrlKey(url)];
+    if (entry?.fileName) {
+      const fresh = await refreshCdnUrl(entry.fileName);
+      results.push(fresh
+        ? { url, status: 'refreshed', newUrl: fresh, detail: 'CDN URL expired — re-uploaded automatically' }
+        : { url, status: 'error',     newUrl: null,  detail: 'CDN URL expired — re-upload failed, check token' });
+    } else {
+      results.push({ url, status: 'expired', newUrl: null,
+        detail: 'CDN URL expired and no local backup found — re-upload the image manually' });
+    }
+  }
+
+  appendLog(`[Image] CDN check: ${results.length} URLs — ${results.filter(r=>r.status==='ok').length} ok, ${results.filter(r=>r.status==='refreshed').length} refreshed, ${results.filter(r=>r.status==='error'||r.status==='expired'||r.status==='missing').length} failed`);
+  return res.json({ results });
+});
+
 // ── API: Image URL Resolver (used by bot to refresh expired CDN URLs)
 // GET /api/uploads/resolve?url=<encoded_url>
 app.get('/api/uploads/resolve', async (req, res) => {

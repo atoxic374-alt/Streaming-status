@@ -342,7 +342,14 @@
         </div>
 
         <div class="panel" style="margin:0">
-          <div class="panel-header"><h4>Activity Images</h4><span class="muted-text">Attachments</span></div>
+          <div class="panel-header">
+            <h4>Activity Images</h4>
+            <span class="muted-text">Attachments</span>
+            <button class="text-btn check-cdn-btn" id="checkImagesBtn" title="Check all images are properly saved on Discord CDN">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              Check CDN
+            </button>
+          </div>
           <input id="largeImageUpload" type="file" accept="image/*" multiple hidden/>
           <input id="smallImageUpload" type="file" accept="image/*" multiple hidden/>
           <div class="setting-group">
@@ -360,6 +367,14 @@
               <button class="upload-status-close" onclick="document.getElementById('imageUploadStatus').style.display='none'">&times;</button>
             </div>
             <div id="imageUploadSteps" class="upload-steps"></div>
+          </div>
+          <div id="imageCheckStatus" class="upload-status" style="display:none">
+            <div class="upload-status-header">
+              <span id="imageCheckStatusIcon"></span>
+              <span id="imageCheckStatusTitle"></span>
+              <button class="upload-status-close" onclick="document.getElementById('imageCheckStatus').style.display='none'">&times;</button>
+            </div>
+            <div id="imageCheckSteps" class="upload-steps"></div>
           </div>
         </div>
 
