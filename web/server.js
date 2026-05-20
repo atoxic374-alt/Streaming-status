@@ -530,8 +530,59 @@ function isLocalUrl(url) {
 // ── Discord CDN Upload (DM-to-self / Saved Messages) ─────────────
 // Discord's "DM to self" creates a Saved Messages channel — this is
 // a supported API feature used to get a publicly accessible CDN URL.
+// ── Session cache: token + channel verified once per batch ────────
+// Avoids repeating 2 API calls per image when uploading many at once.
+// Cache lives for 10 minutes; invalidated when token changes.
+let _cdnSession = null; // { token, username, channelId, validUntil }
+
+function getCdnSession(token) {
+  const now = Date.now();
+  if (_cdnSession && _cdnSession.token === token && _cdnSession.validUntil > now) {
+    return _cdnSession;
+  }
+  return null;
+}
+
+async function buildCdnSession(token, ua) {
+  // ① Verify token
+  const meR = await fetch('https://discord.com/api/v10/users/@me', {
+    headers: { Authorization: token, 'User-Agent': ua },
+    signal: AbortSignal.timeout(10000)
+  });
+  if (!meR.ok) {
+    const err = await meR.json().catch(() => ({}));
+    return { error: `HTTP ${meR.status} — ${err.message || 'invalid or expired token'}` };
+  }
+  const me = await meR.json();
+
+  // ② Open / confirm Saved Messages channel
+  const dmR = await fetch('https://discord.com/api/v10/users/@me/channels', {
+    method: 'POST',
+    headers: { Authorization: token, 'Content-Type': 'application/json', 'User-Agent': ua },
+    body: JSON.stringify({ recipient_id: me.id }),
+    signal: AbortSignal.timeout(10000)
+  });
+  if (!dmR.ok) {
+    const err = await dmR.json().catch(() => ({}));
+    return { error: `HTTP ${dmR.status} — ${err.message || 'could not open Saved Messages'}` };
+  }
+  const dm = await dmR.json();
+
+  _cdnSession = {
+    token,
+    username: me.global_name || me.username,
+    channelId: dm.id,
+    validUntil: Date.now() + 10 * 60 * 1000   // 10 min
+  };
+  return { session: _cdnSession };
+}
+
+// Sleep helper for rate-limit back-off
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 // Returns { url: string|null, steps: [{step,status,detail}] }
-async function uploadToDiscordCDN(imageBuffer, mimeType, fileName) {
+// Pass `sessionHint` (pre-built session) to skip token/channel steps in batch mode.
+async function uploadToDiscordCDN(imageBuffer, mimeType, fileName, sessionHint = null) {
   const steps = [];
   const pass = (step, detail) => { steps.push({ step, status: 'ok',   detail }); appendLog(`[Image] ✓ ${step}: ${detail}`); };
   const fail = (step, detail) => { steps.push({ step, status: 'error', detail }); appendLog(`[Image] ✗ ${step}: ${detail}`, true); };
@@ -548,57 +599,60 @@ async function uploadToDiscordCDN(imageBuffer, mimeType, fileName) {
   info('File check', `${fileName} · ${(imageBuffer.length / 1024).toFixed(1)} KB · ${mimeType}`);
 
   try {
-    // ① Verify token with Discord
-    const meR = await fetch('https://discord.com/api/v10/users/@me', {
-      headers: { Authorization: token, 'User-Agent': ua },
-      signal: AbortSignal.timeout(8000)
-    });
-    if (!meR.ok) {
-      const err = await meR.json().catch(() => ({}));
-      fail('Token verification', `HTTP ${meR.status} — ${err.message || 'invalid or expired token'}`);
-      return { url: null, steps };
+    // ① + ② — use session cache to avoid repeating these for every image in a batch
+    let session = sessionHint || getCdnSession(token);
+    if (session) {
+      pass('Token & channel', `${session.username} · channel ${session.channelId} (cached)`);
+    } else {
+      const result = await buildCdnSession(token, ua);
+      if (result.error) {
+        fail('Token verification', result.error);
+        return { url: null, steps };
+      }
+      session = result.session;
+      pass('Token verification', `Logged in as ${session.username}`);
+      pass('Open Saved Messages', `Channel ready (${session.channelId})`);
     }
-    const me = await meR.json();
-    pass('Token verification', `Logged in as ${me.global_name || me.username} (${me.id})`);
 
-    // ② Open Saved Messages (DM with self) — this is a Discord-native feature
-    const dmR = await fetch('https://discord.com/api/v10/users/@me/channels', {
-      method: 'POST',
-      headers: { Authorization: token, 'Content-Type': 'application/json', 'User-Agent': ua },
-      body: JSON.stringify({ recipient_id: me.id }),
-      signal: AbortSignal.timeout(8000)
-    });
-    if (!dmR.ok) {
-      const err = await dmR.json().catch(() => ({}));
-      fail('Open Saved Messages', `HTTP ${dmR.status} — ${err.message || 'could not open channel'}`);
-      return { url: null, steps };
-    }
-    const dm = await dmR.json();
-    pass('Open Saved Messages', `Channel ready (${dm.id})`);
-
-    // ③ Upload image as file attachment
+    // ③ Upload image — with automatic retry on Discord rate-limit (429)
     const form = new FormData();
     form.append('files[0]', new Blob([imageBuffer], { type: mimeType }), fileName);
     form.append('payload_json', JSON.stringify({ content: '' }));
 
-    const msgR = await fetch(`https://discord.com/api/v10/channels/${dm.id}/messages`, {
-      method: 'POST',
-      headers: { Authorization: token, 'User-Agent': ua },
-      body: form,
-      signal: AbortSignal.timeout(20000)
-    });
+    let msgR, attempt = 0;
+    while (true) {
+      attempt++;
+      msgR = await fetch(`https://discord.com/api/v10/channels/${session.channelId}/messages`, {
+        method: 'POST',
+        headers: { Authorization: token, 'User-Agent': ua },
+        body: form,
+        signal: AbortSignal.timeout(25000)
+      });
+
+      if (msgR.status === 429 && attempt <= 4) {
+        // Discord rate-limit — read retry_after and wait
+        const rl = await msgR.json().catch(() => ({}));
+        const wait = Math.ceil((rl.retry_after || 2) * 1000) + 200;
+        info('Rate limited', `Waiting ${(wait / 1000).toFixed(1)} s before retry (attempt ${attempt}/4)…`);
+        await sleep(wait);
+        continue;
+      }
+      break;
+    }
+
     if (!msgR.ok) {
       const err = await msgR.json().catch(() => ({}));
       fail('Upload to Discord CDN', `HTTP ${msgR.status} — ${err.message || 'upload rejected'}`);
       return { url: null, steps };
     }
+
     const msg = await msgR.json();
     const cdnUrl = msg.attachments?.[0]?.url;
     if (!cdnUrl) {
       fail('Get CDN URL', 'Discord responded but returned no attachment URL');
       return { url: null, steps };
     }
-    pass('Upload to Discord CDN', 'File sent and attachment URL received');
+    pass('Upload to Discord CDN', 'File sent — attachment URL received');
 
     // ④ Check expiry
     const ex = new URL(cdnUrl).searchParams.get('ex');

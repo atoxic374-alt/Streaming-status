@@ -3,21 +3,30 @@
 // ── Upload busy lock — blocks Start until all uploads complete ─────
 let _uploadsBusy = 0;
 
-function setUploadBusy(delta) {
+// delta: +1 lock / -1 unlock
+// current, total: optional progress counters (e.g. 3, 10 → "Uploading 3 of 10…")
+function setUploadBusy(delta, current = 0, total = 0) {
   _uploadsBusy = Math.max(0, _uploadsBusy + delta);
   const btn    = $('startBtn');
   const notice = $('uploadBusyNotice');
+  const text   = $('uploadBusyText');
   if (!btn) return;
   if (_uploadsBusy > 0) {
     btn.disabled = true;
     btn.classList.add('upload-busy');
     btn.setAttribute('title', 'Waiting for images to finish uploading…');
+    if (text) {
+      text.textContent = (total > 1 && current > 0)
+        ? `Uploading ${current} of ${total}…`
+        : 'Uploading image…';
+    }
     if (notice) notice.style.display = 'flex';
   } else {
     btn.disabled = false;
     btn.classList.remove('upload-busy');
     btn.removeAttribute('title');
     if (notice) notice.style.display = 'none';
+    if (text) text.textContent = 'Uploading images…';
   }
 }
 
@@ -1231,18 +1240,22 @@ async function uploadImages(files, key) {
   const list = Array.from(files || []);
   if (!list.length) return;
 
-  setUploadBusy(+1);
+  // Filter valid files first so the progress counter is accurate
+  const valid = list.filter(f => {
+    const mime = guessMime(f);
+    if (!mime) { toast(`"${f.name}" — unsupported type. Use PNG, JPG, GIF, WebP, or AVIF`, 'error'); return false; }
+    if (f.size > 8 * 1024 * 1024) { toast(`"${f.name}" is too large — max 8 MB`, 'error'); return false; }
+    return true;
+  });
+  if (!valid.length) return;
+
+  const total = valid.length;
+  setUploadBusy(+1, 1, total);
   try {
-    for (const file of list) {
+    for (let i = 0; i < valid.length; i++) {
+      const file = valid[i];
+      setUploadBusy(0, i + 1, total);          // update progress counter
       const mime = guessMime(file);
-      if (!mime) {
-        toast(`"${file.name}" — unsupported type. Use PNG, JPG, GIF, WebP, or AVIF`, 'error');
-        continue;
-      }
-      if (file.size > 8 * 1024 * 1024) {
-        toast(`"${file.name}" is too large — max 8 MB`, 'error');
-        continue;
-      }
       try {
         const dataUrl = await new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -1250,12 +1263,8 @@ async function uploadImages(files, key) {
           reader.onerror = () => reject(new Error('Could not read file'));
           reader.readAsDataURL(file);
         });
-        // Ensure dataUrl has the correct MIME type (important for GIFs whose
-        // file.type may be empty or wrong in some browsers)
-        const fixedDataUrl = dataUrl.replace(
-          /^data:([^;]+);base64,/,
-          `data:${mime};base64,`
-        );
+        // Ensure correct MIME in the data URL (critical for GIF)
+        const fixedDataUrl = dataUrl.replace(/^data:([^;]+);base64,/, `data:${mime};base64,`);
         const r = await post(API.upload, { name: file.name, dataUrl: fixedDataUrl });
         showUploadStatus(file.name, r);
         if (r.ok && r.url) {
