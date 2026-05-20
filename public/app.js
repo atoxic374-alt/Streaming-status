@@ -1166,25 +1166,66 @@ function resetPreviewRotation() {
   S.previewImageIdx = 0;
 }
 
+function showUploadStatus(fileName, result) {
+  const panel  = $('imageUploadStatus');
+  const icon   = $('imageUploadStatusIcon');
+  const title  = $('imageUploadStatusTitle');
+  const steps  = $('imageUploadSteps');
+  if (!panel || !steps) return;
+
+  const success = result.ok && result.url && result.cdn !== false;
+  const hasWarn = result.cdn === false;
+
+  icon.textContent  = success ? '✓' : hasWarn ? '⚠' : '✗';
+  icon.className    = success ? 'status-icon ok' : hasWarn ? 'status-icon warn' : 'status-icon error';
+  title.textContent = success
+    ? `"${fileName}" uploaded to Discord CDN`
+    : hasWarn
+    ? `"${fileName}" saved locally (no CDN)`
+    : `"${fileName}" upload failed`;
+
+  steps.innerHTML = (result.steps || []).map(s => `
+    <div class="upload-step ${s.status}">
+      <span class="step-dot">${s.status === 'ok' ? '✓' : s.status === 'warn' ? '⚠' : s.status === 'info' ? '·' : '✗'}</span>
+      <span class="step-name">${escHtml(s.step)}</span>
+      <span class="step-detail">${escHtml(s.detail)}</span>
+    </div>`).join('');
+
+  panel.className = `upload-status ${success ? 'ok' : hasWarn ? 'warn' : 'error'}`;
+  panel.style.display = 'block';
+  if (success) setTimeout(() => { panel.style.display = 'none'; }, 9000);
+}
+
 async function uploadImages(files, key) {
   const list = Array.from(files || []);
   if (!list.length) return;
   for (const file of list) {
     if (!file.type.startsWith('image/')) {
-      toast('Only image attachments are supported', 'error');
+      toast('Only image files are supported (PNG, JPG, GIF, WebP)', 'error');
+      continue;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toast(`"${file.name}" is too large — max 8 MB`, 'error');
       continue;
     }
     try {
       const dataUrl = await new Promise((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = reject;
+        reader.onload  = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Could not read file'));
         reader.readAsDataURL(file);
       });
       const r = await post(API.upload, { name: file.name, dataUrl });
-      if (r.ok && r.url) S.fields[key].push(r.url);
-      else toast(r.error || 'Upload failed', 'error');
+      showUploadStatus(file.name, r);
+      if (r.ok && r.url) {
+        S.fields[key].push(r.url);
+        if (r.cdn) toast(`"${file.name}" ready on Discord CDN`, 'success');
+        else toast(r.warning || 'Saved locally — add a token for CDN upload', 'warn');
+      } else {
+        toast(r.error || 'Upload failed', 'error');
+      }
     } catch (e) {
+      showUploadStatus(file.name, { ok: false, steps: [{ step: 'Read file', status: 'error', detail: e.message }] });
       toast(e.message || 'Upload failed', 'error');
     }
   }
@@ -1204,27 +1245,35 @@ async function uploadSpotifyArt(files, index = S.spotify.activeTrack) {
   const file = Array.from(files || [])[0];
   if (!file) return;
   if (!file.type.startsWith('image/')) {
-    toast('Only image attachments are supported', 'error');
+    toast('Only image files are supported (PNG, JPG, GIF, WebP)', 'error');
+    return;
+  }
+  if (file.size > 8 * 1024 * 1024) {
+    toast(`"${file.name}" is too large — max 8 MB`, 'error');
     return;
   }
   try {
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
+      reader.onload  = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Could not read file'));
       reader.readAsDataURL(file);
     });
     const r = await post(API.upload, { name: file.name, dataUrl });
+    showUploadStatus(file.name, r);
     if (r.ok && r.url) {
       S.spotify.activeTrack = Math.max(0, Math.min(Number(index) || 0, S.spotify.tracks.length - 1));
       const track = activeSpotifyTrack(true);
       if (track) track.albumArtUrl = r.url;
       renderSpotifyTrackRows();
       renderSpotifyPreview();
+      if (r.cdn) toast(`Album art ready on Discord CDN`, 'success');
+      else toast(r.warning || 'Saved locally — add a token for CDN upload', 'warn');
     } else {
       toast(r.error || 'Upload failed', 'error');
     }
   } catch (e) {
+    showUploadStatus(file.name, { ok: false, steps: [{ step: 'Read file', status: 'error', detail: e.message }] });
     toast(e.message || 'Upload failed', 'error');
   }
 }

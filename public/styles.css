@@ -675,6 +675,35 @@ code{font-family:monospace;font-size:11px;background:var(--bg-input);padding:1px
 .kill-actions{display:flex;gap:10px;width:100%;margin-top:4px}
 .kill-actions .btn{flex:1;justify-content:center}
 
+/* ── Image Upload Status Panel ── */
+.upload-status{margin-top:10px;border-radius:8px;border:1px solid var(--border-light);padding:10px 12px;background:var(--bg-card);animation:fadeIn .2s ease}
+.upload-status.ok   {border-color:rgba(74,222,128,.25);background:rgba(74,222,128,.04)}
+.upload-status.warn {border-color:rgba(251,191,36,.25);background:rgba(251,191,36,.04)}
+.upload-status.error{border-color:rgba(248,113,113,.25);background:rgba(248,113,113,.04)}
+.upload-status-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.upload-status-header .status-icon{font-size:14px;font-weight:700;width:20px;text-align:center;flex-shrink:0}
+.upload-status-header .status-icon.ok   {color:var(--success)}
+.upload-status-header .status-icon.warn {color:var(--warning)}
+.upload-status-header .status-icon.error{color:var(--error)}
+.upload-status-header #imageUploadStatusTitle{font-size:12px;font-weight:600;color:var(--text);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.upload-status-close{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:16px;padding:0 2px;line-height:1;margin-left:auto;flex-shrink:0}
+.upload-status-close:hover{color:var(--text)}
+.upload-steps{display:flex;flex-direction:column;gap:3px}
+.upload-step{display:grid;grid-template-columns:18px 140px 1fr;gap:6px;align-items:baseline;font-size:11px;padding:2px 0;border-top:1px solid rgba(120,72,88,.08)}
+.upload-step:first-child{border-top:none}
+.step-dot{text-align:center;font-size:10px;font-weight:700}
+.upload-step.ok    .step-dot{color:var(--success)}
+.upload-step.warn  .step-dot{color:var(--warning)}
+.upload-step.error .step-dot{color:var(--error)}
+.upload-step.info  .step-dot{color:var(--text-dim)}
+.step-name{font-weight:600;color:var(--text-dim)}
+.upload-step.error .step-name{color:var(--error)}
+.upload-step.warn  .step-name{color:var(--warning)}
+.step-detail{color:var(--text-dim);word-break:break-all}
+.upload-step.ok    .step-detail{color:var(--text-dim)}
+.upload-step.error .step-detail{color:rgba(248,113,113,.8)}
+.upload-step.warn  .step-detail{color:rgba(251,191,36,.8)}
+
 /* ── Stopped Screen ── */
 .stopped-screen{position:fixed;inset:0;background:#080406;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;font-family:system-ui,-apple-system,sans-serif}
 .stopped-icon{width:80px;height:80px;border-radius:50%;background:rgba(122,80,96,.1);border:1px solid rgba(122,80,96,.25);display:flex;align-items:center;justify-content:center}

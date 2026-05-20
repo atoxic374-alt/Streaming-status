@@ -349,6 +349,14 @@
             <div class="group-title">Small Image <button class="text-btn" id="addSmallImageBtn">+ Image</button></div>
             <div id="smallImagesRows" class="config-list"></div>
           </div>
+          <div id="imageUploadStatus" class="upload-status" style="display:none">
+            <div class="upload-status-header">
+              <span id="imageUploadStatusIcon"></span>
+              <span id="imageUploadStatusTitle"></span>
+              <button class="upload-status-close" onclick="document.getElementById('imageUploadStatus').style.display='none'">&times;</button>
+            </div>
+            <div id="imageUploadSteps" class="upload-steps"></div>
+          </div>
         </div>
 
         <div class="panel" style="margin:0">
