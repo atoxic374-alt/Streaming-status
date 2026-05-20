@@ -140,8 +140,19 @@ class GetImage {
             const requested = [url1, url2].filter(Boolean);
             console.log(`[Image] Calling Discord external-assets API (${requested.length} image(s))`.grey);
 
-            const images = await getExternal(this.client, applicationId || "1109522937989562409", ...requested);
-            if (!images.length) throw new Error("Discord returned no external asset paths");
+            // Retry up to 3 times with exponential back-off (2 s, 4 s)
+            let images = [];
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    images = await getExternal(this.client, applicationId || "1109522937989562409", ...requested);
+                    if (images.length) break;
+                    throw new Error("Discord returned no external asset paths");
+                } catch (err) {
+                    if (attempt === 3) throw err;
+                    console.log(`[Image] getExternal attempt ${attempt} failed (${err.message}) — retrying in ${attempt * 2}s…`.yellow);
+                    await new Promise(r => setTimeout(r, attempt * 2000));
+                }
+            }
 
             const resolve = (item) => item?.url?.includes("attachments") ? item.url : item?.external_asset_path;
             for (const image of images) {

@@ -921,12 +921,70 @@ app.get('/api/ratelimits', (_, res) => {
   res.json({ limits: Object.values(rateLimits) });
 });
 
+// ── Pre-start image check: refreshes expired/local URLs in config ──
+// Called automatically every time the bot is about to start.
+// Reads the active config, fixes stale URLs, saves updated config,
+// and returns a summary so the frontend can show what happened.
+async function preStartImageCheck() {
+  const cfg = readJSON(PATHS.config, {});
+  const allUrls = [
+    ...(cfg.bigimg   || []),
+    ...(cfg.smallimg || [])
+  ].filter(Boolean);
+  if (!allUrls.length) return { checked: 0, refreshed: 0, failed: 0 };
+
+  const manifest = loadManifest();
+  let refreshed = 0, failed = 0, changed = false;
+
+  const tryRefresh = async (url) => {
+    if (!url) return url;
+    if (!isLocalUrl(url) && !isExpiredCdnUrl(url)) return url;   // already valid
+
+    if (isLocalUrl(url)) {
+      // Local URL — look up manifest for CDN copy
+      const fileName = decodeURIComponent(url.split('/uploads/').pop() || '');
+      const entry = manifest[fileName] || Object.values(manifest).find(e => e.fileName === fileName);
+      if (entry?.cdnUrl && !isExpiredCdnUrl(entry.cdnUrl)) return entry.cdnUrl;
+      if (entry?.fileName) return await refreshCdnUrl(entry.fileName) || null;
+      return null;
+    }
+
+    // Expired Discord CDN URL — find local backup + re-upload
+    const entry = manifest[cdnUrlKey(url)];
+    if (entry?.fileName) return await refreshCdnUrl(entry.fileName) || null;
+    return null;
+  };
+
+  for (let i = 0; i < (cfg.bigimg || []).length; i++) {
+    const fresh = await tryRefresh(cfg.bigimg[i]);
+    if (fresh === null)                  { failed++;    }
+    else if (fresh !== cfg.bigimg[i])    { cfg.bigimg[i] = fresh; refreshed++; changed = true; }
+  }
+  for (let i = 0; i < (cfg.smallimg || []).length; i++) {
+    const fresh = await tryRefresh(cfg.smallimg[i]);
+    if (fresh === null)                   { failed++;     }
+    else if (fresh !== cfg.smallimg[i])   { cfg.smallimg[i] = fresh; refreshed++; changed = true; }
+  }
+
+  if (changed) {
+    writeJSON(PATHS.config, cfg);
+    appendLog(`[Image] Pre-start: refreshed ${refreshed} URL(s) in config before bot launch`);
+  }
+  if (failed) appendLog(`[Image] Pre-start: ${failed} image URL(s) could not be refreshed — bot will try again at runtime`, true);
+
+  return { checked: allUrls.length, refreshed, failed };
+}
+
 // ── API: Runtime ───────────────────────────────────────────────────
 app.get('/api/runtime', (_, res) => res.json(runtimeStatus()));
-app.post('/api/runtime/start', (_, res) => {
+app.post('/api/runtime/start', async (_, res) => {
   if (botProc) return res.status(409).json({ error: 'already running', status: runtimeStatus() });
+
+  // Validate + auto-refresh all image URLs before bot starts
+  const imageCheck = await preStartImageCheck();
+
   startBot();
-  res.json({ ok: true, status: runtimeStatus() });
+  res.json({ ok: true, status: runtimeStatus(), imageCheck });
 });
 app.post('/api/runtime/stop', (_, res) => {
   if (!botProc) return res.status(409).json({ error: 'not running' });

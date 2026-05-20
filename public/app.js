@@ -2107,9 +2107,32 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   $('startBtn')?.addEventListener('click', async () => {
-    const r = await post(API.start, {});
-    if (r.ok || r.status) toast('Bot starting...', 'info');
-    else toast(r.error || 'Already running', 'error');
+    const btn = $('startBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Preparing…'; }
+    try {
+      const r = await post(API.start, {});
+      if (r.ok || r.status) {
+        const ic = r.imageCheck;
+        if (ic && ic.checked > 0) {
+          if (ic.refreshed > 0 && ic.failed === 0) {
+            toast(`Bot starting — ${ic.refreshed} image URL(s) refreshed ✓`, 'success');
+          } else if (ic.failed > 0) {
+            toast(`Bot starting — ${ic.failed} image(s) couldn't refresh (check token)`, 'warn');
+          } else {
+            toast(`Bot starting — all ${ic.checked} image(s) verified ✓`, 'success');
+          }
+        } else {
+          toast('Bot starting…', 'info');
+        }
+      } else {
+        toast(r.error || 'Already running', 'error');
+      }
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Start';
+      }
+    }
   });
   $('stopBtn')?.addEventListener('click', async () => {
     const r = await post(API.stop, {});
