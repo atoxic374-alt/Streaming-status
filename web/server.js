@@ -589,26 +589,94 @@ async function resolveManagedUploadUrl(url, manifest = loadManifest()) {
     : { url: null, status: 'error', detail: 'Could not upload to Discord CDN; check token configuration' };
 }
 
-// ── Discord CDN Upload (configured DM/server destination) ─────────
-// ── Session cache: token + channel verified once per batch ────────
-// Avoids repeating 2 API calls per image when uploading many at once.
-// Cache lives for 10 minutes; invalidated when token changes.
-let _cdnSession = null; // { token, username, channelId, validUntil }
-let _tokenAccountCache = new Map(); // token -> { account, validUntil }
-let _lastCdnUploadAt = new Map(); // upload target key -> timestamp
+// ── Discord CDN Upload — Full Human Simulation ────────────────────
+// Session cache: verified once per batch (10 min TTL)
+let _cdnSession = null;
+let _tokenAccountCache = new Map();
+let _lastCdnUploadAt = new Map();
 
-const DISCORD_UPLOAD_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0 Safari/537.36';
-const MIN_CDN_UPLOAD_INTERVAL_MS = 4000;
-const HUMAN_CDN_UPLOAD_INTERVAL_MS = 7000;
+// ── Fingerprint pool — realistic Discord desktop client profiles ──
+const _FP_POOL = [
+  { chrome: '124.0.6367.208', electron: '30.0.6', client_version: '0.0.316', client_build_number: 338988, native_build_number: 49607, os_version: '10.0.22631' },
+  { chrome: '122.0.6261.129', electron: '29.4.6', client_version: '0.0.313', client_build_number: 334300, native_build_number: 48702, os_version: '10.0.19045' },
+  { chrome: '120.0.6099.291', electron: '28.3.3', client_version: '0.0.309', client_build_number: 327348, native_build_number: 47563, os_version: '10.0.22631' },
+  { chrome: '126.0.6478.127', electron: '31.2.1', client_version: '0.0.320', client_build_number: 344862, native_build_number: 50901, os_version: '10.0.22631' },
+  { chrome: '118.0.5993.119', electron: '27.3.11', client_version: '0.0.305', client_build_number: 318682, native_build_number: 46102, os_version: '10.0.19045' },
+];
 
-function discordApiHeaders(token, ua) {
+// ── Persistent session fingerprint (stable per server restart) ────
+const _sessionFp = _FP_POOL[Math.floor(Math.random() * _FP_POOL.length)];
+const _sessionUa = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/${_sessionFp.client_version} Chrome/${_sessionFp.chrome} Electron/${_sessionFp.electron} Safari/537.36`;
+
+// ── Cookie generator ──────────────────────────────────────────────
+function _genHex(len) {
+  let s = '';
+  for (let i = 0; i < len; i++) s += '0123456789abcdef'[Math.floor(Math.random() * 16)];
+  return s;
+}
+function _genDcfduid()  { return `${_genHex(8)}-${_genHex(4)}-${_genHex(4)}-${_genHex(4)}-${_genHex(12)}`; }
+function _genSdcfduid() { return _genHex(68); }
+function _genCfuvid()   { return `${_genHex(8)}_${_genHex(8)}-${_genHex(8)}-${_genHex(16)}-${Math.floor(Date.now()/1000)}`; }
+
+const _sessionCookies = (() => {
+  const consentId = _genDcfduid();
+  return [
+    `__dcfduid=${_genDcfduid()}`,
+    `__sdcfduid=${_genSdcfduid()}`,
+    `locale=en-US`,
+    `_cfuvid=${_genCfuvid()}`,
+    `OptanonConsent=isGpcEnabled=0&datestamp=${encodeURIComponent(new Date().toUTCString())}&version=202501.2.0&browserGpcFlag=0&isIABGlobal=false&consentId=${consentId}&interactionCount=1&isAnonUser=1&landingPath=NotLandingPage&groups=C0001%3A1%2CC0002%3A1%2CC0003%3A1`,
+  ].join('; ');
+})();
+
+// ── X-Super-Properties ────────────────────────────────────────────
+const _superPropsB64 = (() => {
+  const sp = {
+    os: 'Windows', browser: 'Discord Client', release_channel: 'stable',
+    client_version: _sessionFp.client_version, os_version: _sessionFp.os_version,
+    os_arch: 'x64', app_arch: 'x64', system_locale: 'en-US',
+    browser_user_agent: _sessionUa, browser_version: _sessionFp.electron,
+    client_build_number: _sessionFp.client_build_number,
+    native_build_number: _sessionFp.native_build_number,
+    client_event_source: null, design_id: 0,
+  };
+  return Buffer.from(JSON.stringify(sp)).toString('base64');
+})();
+
+// ── Full human Discord headers ────────────────────────────────────
+function buildHumanHeaders(token, referer = 'https://discord.com/channels/@me', extra = {}) {
   return {
-    Authorization: token,
-    'Content-Type': 'application/json',
-    'User-Agent': ua,
+    'Authorization':       token,
+    'User-Agent':          _sessionUa,
+    'X-Super-Properties':  _superPropsB64,
+    'X-Discord-Locale':    'en-US',
+    'X-Discord-Timezone':  Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
+    'X-Debug-Options':     'bugReporterEnabled',
+    'Cookie':              _sessionCookies,
+    'Content-Type':        'application/json',
+    'Accept':              '*/*',
+    'Accept-Language':     'en-US,en;q=0.9',
+    'Accept-Encoding':     'gzip, deflate, br',
+    'Connection':          'keep-alive',
+    'Sec-Fetch-Dest':      'empty',
+    'Sec-Fetch-Mode':      'cors',
+    'Sec-Fetch-Site':      'same-origin',
+    'Referer':             referer,
+    'Origin':              'https://discord.com',
+    ...extra,
   };
 }
 
+// ── Human timing helper ───────────────────────────────────────────
+// Natural delay with ±8% micro-jitter. Not too slow, not too fast.
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function humanDelay(minMs, maxMs) {
+  const base = minMs + Math.random() * (maxMs - minMs);
+  const jitter = base * 0.08 * (Math.random() * 2 - 1);
+  return sleep(Math.max(200, Math.round(base + jitter)));
+}
+
+// ── Config helpers ────────────────────────────────────────────────
 function uploadTargetConfigFromEnv() {
   const type = String(process.env.DISCORD_UPLOAD_TARGET_TYPE || '').trim().toLowerCase();
   const legacyChannelId = String(process.env.DISCORD_UPLOAD_CHANNEL_ID || process.env.UPLOAD_CHANNEL_ID || '').trim();
@@ -648,13 +716,20 @@ function uploadTargetKey(target) {
   return `${account}:saved-messages`;
 }
 
-async function fetchTokenAccount(token, ua = DISCORD_UPLOAD_UA) {
+// ── Account helpers ───────────────────────────────────────────────
+async function fetchTokenAccount(token) {
   const cached = _tokenAccountCache.get(token);
   if (cached && cached.validUntil > Date.now()) return cached.account;
 
-  const r = await discordJson('https://discord.com/api/v10/users/@me', token, ua);
-  if (!r.ok) throw new Error(`HTTP ${r.status} — ${r.data.message || 'invalid or expired token'}`);
-  const u = r.data;
+  const r = await fetch('https://discord.com/api/v10/users/@me', {
+    headers: buildHumanHeaders(token),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    throw new Error(`HTTP ${r.status} — ${err.message || 'invalid or expired token'}`);
+  }
+  const u = await r.json();
   const account = {
     id: u.id,
     username: u.global_name || u.username,
@@ -668,25 +743,25 @@ async function fetchTokenAccount(token, ua = DISCORD_UPLOAD_UA) {
   return account;
 }
 
-async function listUploadAccounts(ua = DISCORD_UPLOAD_UA) {
+async function listUploadAccounts() {
   const tokens = extractTokens();
   const results = await Promise.allSettled(tokens.map(async (token, index) => ({
     index,
-    ...(await fetchTokenAccount(token, ua)),
+    ...(await fetchTokenAccount(token)),
   })));
   return results.map((r, index) => r.status === 'fulfilled'
     ? { ...r.value, valid: true }
     : { index, valid: false, id: '', username: `Token ${index + 1}`, tag: r.reason?.message || 'Invalid token', masked: maskToken(tokens[index] || '') });
 }
 
-async function selectUploadToken(ua = DISCORD_UPLOAD_UA, accountId = '') {
+async function selectUploadToken(accountId = '') {
   const tokens = extractTokens();
   if (!tokens.length) return { error: 'No token configured' };
 
   if (accountId) {
     for (const token of tokens) {
       try {
-        const account = await fetchTokenAccount(token, ua);
+        const account = await fetchTokenAccount(token);
         if (account.id === accountId) return { token, account };
       } catch {}
     }
@@ -695,19 +770,15 @@ async function selectUploadToken(ua = DISCORD_UPLOAD_UA, accountId = '') {
 
   for (const token of tokens) {
     try {
-      return { token, account: await fetchTokenAccount(token, ua) };
+      return { token, account: await fetchTokenAccount(token) };
     } catch {}
   }
   return { error: 'No valid token account available' };
 }
 
-function isPrivateChannelType(type) {
-  return type === 1 || type === 3;
-}
-
-function isServerUploadChannelType(type) {
-  return type === 0 || type === 5;
-}
+// ── Channel helpers ───────────────────────────────────────────────
+function isPrivateChannelType(type) { return type === 1 || type === 3; }
+function isServerUploadChannelType(type) { return type === 0 || type === 5; }
 
 function discordChannelName(channel) {
   if (!channel) return 'Unknown channel';
@@ -717,35 +788,39 @@ function discordChannelName(channel) {
   return names.length ? names.join(', ') : `Channel ${channel.id}`;
 }
 
-async function discordJson(url, token, ua, options = {}) {
+async function discordJson(url, token, options = {}) {
   const r = await fetch(url, {
     ...options,
-    headers: { ...discordApiHeaders(token, ua), ...(options.headers || {}) },
+    headers: { ...buildHumanHeaders(token, options._referer), ...(options.headers || {}) },
     signal: options.signal || AbortSignal.timeout(10000),
   });
   const data = await r.json().catch(() => ({}));
   return { ok: r.ok, status: r.status, data };
 }
 
-async function checkChannelWritable(channelId, token, ua) {
-  const r = await fetch(`https://discord.com/api/v10/channels/${channelId}/typing`, {
-    method: 'POST',
-    headers: discordApiHeaders(token, ua),
-    signal: AbortSignal.timeout(10000),
-  });
-  if (r.ok || r.status === 204) return { ok: true };
-  const err = await r.json().catch(() => ({}));
-  return { ok: false, error: `HTTP ${r.status} — ${err.message || 'cannot write to this channel'}` };
+// ── Simulate typing indicator (fire-and-forget) ───────────────────
+async function simulateTyping(channelId, token) {
+  try {
+    await fetch(`https://discord.com/api/v10/channels/${channelId}/typing`, {
+      method: 'POST',
+      headers: buildHumanHeaders(token, `https://discord.com/channels/@me/${channelId}`),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {}
 }
 
-async function validateUploadTarget(target, token, ua) {
+async function validateUploadTarget(target, token) {
   target = normalizeUploadTarget(target);
   if (!target.type) return { ok: false, error: 'Choose DM or Server upload target first' };
 
   const channelId = target.type === 'dm' ? target.dmChannelId : target.channelId;
   if (!channelId) return { ok: false, error: target.type === 'dm' ? 'Choose a DM first' : 'Choose a server channel first' };
 
-  const ch = await discordJson(`https://discord.com/api/v10/channels/${channelId}`, token, ua);
+  const referer = target.type === 'dm'
+    ? `https://discord.com/channels/@me/${channelId}`
+    : `https://discord.com/channels/${target.guildId || '@me'}/${channelId}`;
+
+  const ch = await discordJson(`https://discord.com/api/v10/channels/${channelId}`, token, { _referer: referer });
   if (!ch.ok) {
     const noun = target.type === 'dm' ? 'DM' : 'channel';
     return { ok: false, error: `${noun} is missing or inaccessible: HTTP ${ch.status} — ${ch.data.message || 'not found'}` };
@@ -761,31 +836,44 @@ async function validateUploadTarget(target, token, ua) {
     }
   }
 
-  const writable = await checkChannelWritable(channelId, token, ua);
-  if (!writable.ok) {
+  // Simulate: human clicks into the channel, slight pause before sending typing
+  await humanDelay(600, 1400);
+
+  const typingR = await fetch(`https://discord.com/api/v10/channels/${channelId}/typing`, {
+    method: 'POST',
+    headers: buildHumanHeaders(token, referer),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!typingR.ok && typingR.status !== 204) {
+    const err = await typingR.json().catch(() => ({}));
     const hint = target.type === 'dm'
       ? 'DM exists but appears closed or not messageable'
       : 'Channel exists but the account cannot write there';
-    return { ok: false, error: `${hint}: ${writable.error}` };
+    return { ok: false, error: `${hint}: HTTP ${typingR.status} — ${err.message || 'cannot write'}` };
   }
 
   return {
     ok: true,
     channelId,
+    referer,
     targetKey: uploadTargetKey(target),
     destination: target.type === 'dm' ? `DM: ${discordChannelName(channel)}` : `Server channel: #${discordChannelName(channel)}`,
     channel,
   };
 }
 
-async function buildCdnSession(token, ua) {
+// ── Build session: login → navigate → open destination ───────────
+async function buildCdnSession(token) {
   const target = uploadTargetConfigFromEnv();
   const targetKey = uploadTargetKey(target);
 
-  // ① Verify token
+  // Phase 1: Simulate app open (Discord loading splash)
+  await humanDelay(500, 1200);
+
+  // Phase 2: Verify login (/@me — same call Discord client makes on startup)
   const meR = await fetch('https://discord.com/api/v10/users/@me', {
-    headers: { Authorization: token, 'User-Agent': ua },
-    signal: AbortSignal.timeout(10000)
+    headers: buildHumanHeaders(token, 'https://discord.com/login'),
+    signal: AbortSignal.timeout(10000),
   });
   if (!meR.ok) {
     const err = await meR.json().catch(() => ({}));
@@ -796,27 +884,29 @@ async function buildCdnSession(token, ua) {
     return { error: `Selected upload account does not match this token (${me.id})` };
   }
 
+  // Phase 3: Simulate navigating to DM list / server list (natural pause)
+  await humanDelay(800, 1800);
+
   if (target.type === 'dm' || target.type === 'server') {
-    const check = await validateUploadTarget(target, token, ua);
+    const check = await validateUploadTarget(target, token);
     if (!check.ok) return { error: check.error };
     _cdnSession = {
-      token,
-      targetKey: check.targetKey,
+      token, targetKey: check.targetKey,
       username: me.global_name || me.username,
       channelId: check.channelId,
-      target,
-      destination: check.destination,
-      validUntil: Date.now() + 10 * 60 * 1000
+      referer: check.referer,
+      target, destination: check.destination,
+      validUntil: Date.now() + 10 * 60 * 1000,
     };
     return { session: _cdnSession };
   }
 
-  // ② Open / confirm Saved Messages channel
+  // Phase 4: Open Saved Messages (self DM)
   const dmR = await fetch('https://discord.com/api/v10/users/@me/channels', {
     method: 'POST',
-    headers: { Authorization: token, 'Content-Type': 'application/json', 'User-Agent': ua },
+    headers: buildHumanHeaders(token, 'https://discord.com/channels/@me'),
     body: JSON.stringify({ recipient_id: me.id }),
-    signal: AbortSignal.timeout(10000)
+    signal: AbortSignal.timeout(10000),
   });
   if (!dmR.ok) {
     const err = await dmR.json().catch(() => ({}));
@@ -824,23 +914,22 @@ async function buildCdnSession(token, ua) {
   }
   const dm = await dmR.json();
 
+  // Phase 5: Navigate into Saved Messages
+  await humanDelay(600, 1200);
+
   _cdnSession = {
-    token,
-    targetKey,
+    token, targetKey,
     username: me.global_name || me.username,
     channelId: dm.id,
-    target,
-    destination: 'Saved Messages',
-    validUntil: Date.now() + 10 * 60 * 1000   // 10 min
+    referer: `https://discord.com/channels/@me/${dm.id}`,
+    target, destination: 'Saved Messages',
+    validUntil: Date.now() + 10 * 60 * 1000,
   };
   return { session: _cdnSession };
 }
 
-// Sleep helper for rate-limit back-off
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
+// ── Main upload function with full human simulation ───────────────
 // Returns { url: string|null, steps: [{step,status,detail}] }
-// Pass `sessionHint` (pre-built session) to skip token/channel steps in batch mode.
 async function uploadToDiscordCDN(imageBuffer, mimeType, fileName, sessionHint = null, options = {}) {
   const steps = [];
   const pass = (step, detail) => { steps.push({ step, status: 'ok',   detail }); appendLog(`[Image] ✓ ${step}: ${detail}`); };
@@ -850,70 +939,73 @@ async function uploadToDiscordCDN(imageBuffer, mimeType, fileName, sessionHint =
   info('File check', `${fileName} · ${(imageBuffer.length / 1024).toFixed(1)} KB · ${mimeType}`);
 
   const target = uploadTargetConfigFromEnv();
-  const selected = await selectUploadToken(DISCORD_UPLOAD_UA, target.accountId);
+  const selected = await selectUploadToken(target.accountId);
   if (selected.error) {
     fail('Upload account check', selected.error);
     return { url: null, steps };
   }
 
   const token = selected.token;
-  const ua = DISCORD_UPLOAD_UA;
 
   try {
-    // ① + ② — use session cache to avoid repeating these for every image in a batch
+    // ── Phase A: Session (login + channel open) ───────────────────
     const targetKey = uploadTargetKey(target);
     let session = sessionHint || getCdnSession(token, targetKey);
     if (session) {
       pass('Upload destination check', `${session.destination || 'channel'} ${session.channelId} (cached)`);
     } else {
-      const result = await buildCdnSession(token, ua);
+      const result = await buildCdnSession(token);
       if (result.error) {
-        const label = result.error.includes('invalid or expired token')
-          ? 'Token verification'
-          : result.error.includes('Cannot send messages to this user')
-            ? 'Open Saved Messages'
-            : 'Upload destination check';
+        const label = result.error.includes('invalid or expired token') ? 'Token verification'
+          : result.error.includes('Cannot send messages') ? 'Open destination'
+          : 'Upload destination check';
         fail(label, result.error);
         return { url: null, steps };
       }
       session = result.session;
-      pass('Token verification', `Logged in as ${session.username}`);
-      pass('Open upload destination', `${session.destination || 'channel'} ready (${session.channelId})`);
+      pass('Login simulation', `Authenticated as ${session.username}`);
+      pass('Channel navigation', `${session.destination} ready (${session.channelId})`);
     }
 
-    // ③ Upload image — with automatic retry on Discord rate-limit (429)
+    // ── Phase B: Inter-upload natural pacing ──────────────────────
+    // Between images in a batch: 1.2–2.5 s (natural, not a flat long wait)
     const lastUpload = _lastCdnUploadAt.get(session.targetKey) || 0;
-    const baseUploadInterval = options.humanMode ? HUMAN_CDN_UPLOAD_INTERVAL_MS : MIN_CDN_UPLOAD_INTERVAL_MS;
-    let uploadInterval = baseUploadInterval;
-    if (options.humanMode) {
-      const humanJitter = Math.min(Math.max(Number(options.humanJitter) || 0.25, 0.05), 0.5);
-      const variance = baseUploadInterval * humanJitter;
-      uploadInterval = Math.max(MIN_CDN_UPLOAD_INTERVAL_MS, baseUploadInterval - variance + Math.random() * variance * 2);
-    }
-    const quietWait = Math.max(0, uploadInterval - (Date.now() - lastUpload));
-    if (quietWait > 0) {
-      info('Upload queue', `Waiting ${(quietWait / 1000).toFixed(1)} s before next image`);
-      await sleep(quietWait);
+    const elapsed = Date.now() - lastUpload;
+    const minGap = 1200 + Math.random() * 1300; // 1.2–2.5 s
+    if (elapsed < minGap && lastUpload > 0) {
+      const wait = Math.round(minGap - elapsed);
+      info('Pacing', `Natural pause ${(wait / 1000).toFixed(1)} s`);
+      await sleep(wait);
     }
 
+    // ── Phase C: Human compose simulation ────────────────────────
+    // Simulate: user drags/picks file, sees preview, then clicks Send
+    const referer = session.referer || `https://discord.com/channels/@me/${session.channelId}`;
+    await simulateTyping(session.channelId, token);
+    await humanDelay(700, 1600);
+
+    // ── Phase D: Upload with full human headers ───────────────────
     const form = new FormData();
     form.append('files[0]', new Blob([imageBuffer], { type: mimeType }), fileName);
     form.append('payload_json', JSON.stringify({ content: '' }));
+
+    // Build upload headers (no Content-Type — browser sets multipart boundary)
+    const uploadHeaders = buildHumanHeaders(token, referer);
+    delete uploadHeaders['Content-Type'];
 
     let msgR, attempt = 0;
     while (true) {
       attempt++;
       msgR = await fetch(`https://discord.com/api/v10/channels/${session.channelId}/messages`, {
         method: 'POST',
-        headers: { Authorization: token, 'User-Agent': ua },
+        headers: uploadHeaders,
         body: form,
-        signal: AbortSignal.timeout(25000)
+        signal: AbortSignal.timeout(30000),
       });
 
       if (msgR.status === 429 && attempt <= 4) {
-        // Discord rate-limit — read retry_after and wait
         const rl = await msgR.json().catch(() => ({}));
-        const wait = Math.ceil((rl.retry_after || 2) * 1000) + 200;
+        const wait = Math.ceil((rl.retry_after || 2) * 1000) + 300;
         info('Rate limited', `Waiting ${(wait / 1000).toFixed(1)} s before retry (attempt ${attempt}/4)…`);
         await sleep(wait);
         continue;
@@ -933,10 +1025,11 @@ async function uploadToDiscordCDN(imageBuffer, mimeType, fileName, sessionHint =
       fail('Get CDN URL', 'Discord responded but returned no attachment URL');
       return { url: null, steps };
     }
+
     pass('Upload to Discord CDN', 'File sent — attachment URL received');
     _lastCdnUploadAt.set(session.targetKey, Date.now());
 
-    // ④ Check expiry
+    // ── Phase E: Check expiry ─────────────────────────────────────
     const ex = new URL(cdnUrl).searchParams.get('ex');
     const expiry = ex ? new Date(parseInt(ex, 16) * 1000).toLocaleString() : 'no expiry';
     pass('CDN URL ready', `Valid until ${expiry} — auto-refresh enabled`);
@@ -1332,17 +1425,12 @@ app.post('/api/runtime/refresh', (_, res) => {
 // Fetches the user's own applications from discord.com/developers/applications
 // using their selfbot token — returns list of apps with id, name, icon
 app.get('/api/discord-apps', async (req, res) => {
-  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9166 Chrome/124.0.6367.243 Electron/30.2.0 Safari/537.36';
-  const picked = await selectUploadToken(ua, String(req.query.accountId || process.env.DISCORD_APP_ACCOUNT_ID || '').trim());
+  const picked = await selectUploadToken(String(req.query.accountId || process.env.DISCORD_APP_ACCOUNT_ID || '').trim());
   if (picked.error) return res.json({ apps: [], error: picked.error });
 
   try {
     const r = await fetch('https://discord.com/api/v10/applications?with_team_applications=true', {
-      headers: {
-        'Authorization': picked.token,
-        'Content-Type': 'application/json',
-        'User-Agent': ua,
-      },
+      headers: buildHumanHeaders(picked.token, 'https://discord.com/developers/applications'),
       signal: AbortSignal.timeout(9000)
     });
 
@@ -1412,22 +1500,21 @@ app.post('/api/tokens/validate', async (req, res) => {
 
 // ── API: Image Upload Destinations ─────────────────────────────────
 app.get('/api/upload-targets', async (req, res) => {
-  const ua = DISCORD_UPLOAD_UA;
   const guildId = String(req.query.guildId || '').trim();
   const selected = uploadTargetConfigFromEnv();
   const accountId = String(req.query.accountId || selected.accountId || '').trim();
   const out = { accounts: [], dms: [], guilds: [], channels: [], selected };
 
   try {
-    out.accounts = await listUploadAccounts(ua);
-    const picked = await selectUploadToken(ua, accountId);
+    out.accounts = await listUploadAccounts();
+    const picked = await selectUploadToken(accountId);
     if (picked.error) return res.json({ ...out, error: picked.error });
     const token = picked.token;
     out.account = picked.account;
 
     const [dmR, guildR] = await Promise.all([
-      discordJson('https://discord.com/api/v10/users/@me/channels', token, ua),
-      discordJson('https://discord.com/api/v10/users/@me/guilds', token, ua),
+      discordJson('https://discord.com/api/v10/users/@me/channels', token),
+      discordJson('https://discord.com/api/v10/users/@me/guilds', token),
     ]);
 
     if (dmR.ok && Array.isArray(dmR.data)) {
@@ -1457,7 +1544,7 @@ app.get('/api/upload-targets', async (req, res) => {
     }
 
     if (guildId) {
-      const chR = await discordJson(`https://discord.com/api/v10/guilds/${guildId}/channels`, token, ua);
+      const chR = await discordJson(`https://discord.com/api/v10/guilds/${guildId}/channels`, token);
       if (chR.ok && Array.isArray(chR.data)) {
         out.channels = chR.data
           .filter(ch => isServerUploadChannelType(ch.type))
@@ -1475,13 +1562,12 @@ app.get('/api/upload-targets', async (req, res) => {
 });
 
 app.post('/api/upload-targets/validate', async (req, res) => {
-  const ua = DISCORD_UPLOAD_UA;
   const target = normalizeUploadTarget(req.body?.target || req.body || {});
-  const picked = await selectUploadToken(ua, target.accountId);
+  const picked = await selectUploadToken(target.accountId);
   if (picked.error) return res.status(400).json({ ok: false, error: picked.error });
 
   const token = picked.token;
-  const check = await validateUploadTarget(target, token, ua);
+  const check = await validateUploadTarget(target, token);
   if (!check.ok) return res.status(400).json({ ok: false, error: check.error });
   res.json({ ok: true, targetKey: check.targetKey, destination: check.destination, channelId: check.channelId, account: picked.account });
 });
