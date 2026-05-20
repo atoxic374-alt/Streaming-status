@@ -694,6 +694,17 @@ app.post('/api/schedule', (req, res) => {
   res.json({ ok: true, schedule: s });
 });
 
+// ── API: Shutdown (kill-switch) ────────────────────────────────────
+app.post('/api/shutdown', (req, res) => {
+  if (botProc) stopBot();
+  res.json({ ok: true, message: 'Server shutting down...' });
+  setTimeout(() => {
+    wss.close();
+    httpServer.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 1500);
+  }, 400);
+});
+
 // ── API: Webhook ───────────────────────────────────────────────────
 app.post('/api/webhook/test', async (req, res) => {
   const { url } = req.body;

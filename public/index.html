@@ -692,6 +692,25 @@
       <div><h1 class="section-title">Settings</h1><p class="section-desc">Integrations and preferences</p></div>
     </div>
 
+    <div class="panel kill-panel">
+      <div class="panel-header">
+        <div style="display:flex;align-items:center;gap:8px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--error)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <h3 style="color:var(--error)">Server Control</h3>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px">
+        <div>
+          <p style="margin:0;font-size:13px;color:var(--text-dim)">Stop the server completely from the browser.</p>
+          <p style="margin:4px 0 0;font-size:11px;color:var(--text-muted)">Stops the bot, closes all connections, and shuts down the cmd window.</p>
+        </div>
+        <button class="btn btn-danger" id="killSwitchBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+          Stop Server &amp; Exit
+        </button>
+      </div>
+    </div>
+
     <div class="two-panel">
       <div class="panel">
         <div class="panel-header">
@@ -781,6 +800,24 @@
   </div>
 </div>
 <div id="editOverlay" onclick="closeEditPopup()" style="display:none;position:fixed;inset:0;z-index:997"></div>
+
+<!-- ── Kill-Switch Modal ── -->
+<div class="kill-overlay" id="killModal" style="display:none">
+  <div class="kill-modal">
+    <div class="kill-icon-wrap">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--error)" stroke-width="1.8"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+    </div>
+    <h3 class="kill-title">Stop StreamDash?</h3>
+    <p class="kill-desc">سيتوقف البوت، تُغلق كل الاتصالات، وتنطفئ نافذة الـ cmd تلقائياً.</p>
+    <div class="kill-actions">
+      <button class="btn btn-outline" id="cancelKillBtn">Cancel</button>
+      <button class="btn btn-danger" id="confirmKillBtn">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+        Yes, Stop Server
+      </button>
+    </div>
+  </div>
+</div>
 
 <!-- ── Profile Compare Modal ── -->
 <div class="cmp-overlay" id="compareModal" style="display:none" onclick="closeCompareModal(event)">

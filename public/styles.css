@@ -662,3 +662,21 @@ code{font-family:monospace;font-size:11px;background:var(--bg-input);padding:1px
   .mnav-item svg{width:22px;height:22px}
   .toast{bottom:75px;right:12px;left:12px}
 }
+
+/* ── Kill-Switch Panel ── */
+.kill-panel{border-color:rgba(248,113,113,.2)!important;background:rgba(248,113,113,.03)!important}
+
+/* ── Kill-Switch Modal ── */
+.kill-overlay{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.72);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:20px}
+.kill-modal{background:var(--bg-panel);border:1px solid rgba(248,113,113,.3);border-radius:var(--radius-lg);width:100%;max-width:400px;padding:32px 28px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:16px;box-shadow:0 20px 60px rgba(0,0,0,.6);animation:popIn .2s cubic-bezier(.4,0,.2,1)}
+.kill-icon-wrap{width:68px;height:68px;border-radius:50%;background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.25);display:flex;align-items:center;justify-content:center}
+.kill-title{font-size:18px;font-weight:800;color:var(--text);margin:0}
+.kill-desc{font-size:13px;color:var(--text-muted);line-height:1.6;margin:0}
+.kill-actions{display:flex;gap:10px;width:100%;margin-top:4px}
+.kill-actions .btn{flex:1;justify-content:center}
+
+/* ── Stopped Screen ── */
+.stopped-screen{position:fixed;inset:0;background:#080406;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;font-family:system-ui,-apple-system,sans-serif}
+.stopped-icon{width:80px;height:80px;border-radius:50%;background:rgba(122,80,96,.1);border:1px solid rgba(122,80,96,.25);display:flex;align-items:center;justify-content:center}
+.stopped-title{font-size:22px;font-weight:800;color:#e8d8dc;margin:0}
+.stopped-sub{font-size:14px;color:#6a5258;margin:0;line-height:1.6;text-align:center}

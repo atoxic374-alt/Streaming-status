@@ -2148,4 +2148,28 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Refresh time-based variables in preview every 30 seconds
   setInterval(() => { if (S._text2Lines?.length) renderPreview(); }, 30000);
   setInterval(() => { if (S.section === 'analytics') loadAnalytics(); }, 10000);
+
+  // ── Kill-switch wiring ──
+  $('killSwitchBtn')?.addEventListener('click', () => {
+    $('killModal').style.display = 'flex';
+  });
+  $('cancelKillBtn')?.addEventListener('click', () => {
+    $('killModal').style.display = 'none';
+  });
+  $('confirmKillBtn')?.addEventListener('click', async () => {
+    const btn = $('confirmKillBtn');
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg> Stopping...`;
+    try { await fetch('/api/shutdown', { method: 'POST' }); } catch {}
+    document.body.innerHTML = `
+      <div class="stopped-screen">
+        <div class="stopped-icon">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#9a7080" stroke-width="1.8">
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>
+          </svg>
+        </div>
+        <h2 class="stopped-title">Server Stopped</h2>
+        <p class="stopped-sub">StreamDash أُوقف بنجاح.<br>يمكنك إغلاق هذه النافذة.</p>
+      </div>`;
+  });
 });
