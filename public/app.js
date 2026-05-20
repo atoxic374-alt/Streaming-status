@@ -1331,7 +1331,8 @@ function maskDisplay(t) {
 }
 
 function copyToken(i) {
-  navigator.clipboard.writeText(S.rawTokens[i]).then(() => toast('Token copied!', 'success'));
+  // Tokens are encrypted in storage — masked display only, cannot copy raw token
+  toast('Tokens are encrypted — cannot copy for security', 'info');
 }
 
 function removeToken(i) {

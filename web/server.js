@@ -125,14 +125,50 @@ function ensureDir(p) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
 }
 
+// ── Token Encryption (AES-256-GCM) ────────────────────────────────
+function _getTokenKey() {
+  let k = process.env.TOKEN_KEY;
+  if (!k || Buffer.from(k, 'hex').length !== 32) {
+    k = crypto.randomBytes(32).toString('hex');
+    try {
+      const cur = fs.existsSync(PATHS.env) ? fs.readFileSync(PATHS.env, 'utf8') : '';
+      if (!cur.includes('TOKEN_KEY=')) fs.appendFileSync(PATHS.env, `\nTOKEN_KEY=${k}\n`);
+    } catch {}
+    process.env.TOKEN_KEY = k;
+  }
+  return Buffer.from(k, 'hex');
+}
+function encryptToken(plain) {
+  if (!plain || plain.startsWith('ENC:')) return plain;
+  try {
+    const key = _getTokenKey(), iv = crypto.randomBytes(12);
+    const c = crypto.createCipheriv('aes-256-gcm', key, iv);
+    const enc = Buffer.concat([c.update(plain, 'utf8'), c.final()]);
+    return `ENC:${iv.toString('hex')}:${c.getAuthTag().toString('hex')}:${enc.toString('hex')}`;
+  } catch { return plain; }
+}
+function decryptToken(stored) {
+  if (!stored) return null;
+  if (!stored.startsWith('ENC:')) return stored; // legacy plaintext
+  try {
+    const p = stored.split(':'), key = _getTokenKey();
+    const dc = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(p[1], 'hex'));
+    dc.setAuthTag(Buffer.from(p[2], 'hex'));
+    return dc.update(Buffer.from(p[3], 'hex')) + dc.final('utf8');
+  } catch { return null; }
+}
+
 // ── Token Helpers ──────────────────────────────────────────────────
-function extractTokens() {
+function extractRawStored() {
   try {
     const raw = fs.readFileSync(PATHS.tokens, 'utf8');
     const match = raw.match(/tk:\s*\[([\s\S]*?)\]/m);
     if (!match) return [];
     return [...match[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
   } catch { return []; }
+}
+function extractTokens() {
+  return extractRawStored().map(t => decryptToken(t)).filter(Boolean);
 }
 function saveTokens(tokens) {
   const raw = fs.readFileSync(PATHS.tokens, 'utf8');
@@ -413,15 +449,32 @@ app.use(express.static(path.join(ROOT, 'public')));
 
 // ── API: Settings ──────────────────────────────────────────────────
 app.get('/api/settings', (_, res) => {
-  res.json({ config: readJSON(PATHS.config), tokens: extractTokens(), runtime: runtimeStatus() });
+  // Never send raw tokens to the browser — masked only
+  res.json({ config: readJSON(PATHS.config), tokens: extractTokens().map(maskToken), runtime: runtimeStatus() });
 });
 app.post('/api/settings', (req, res) => {
   const { config, tokens } = req.body;
   if (!config || !Array.isArray(tokens)) return res.status(400).json({ error: 'invalid payload' });
   const { safe, cleanedTokens } = sanitizePayload(config, tokens);
+
+  // Smart merge: masked token → keep existing encrypted; new plain token → encrypt
+  const existingStored = extractRawStored();
+  const finalTokens = cleanedTokens.map(t => {
+    if (t.includes('••')) {
+      // Find matching stored token by first Discord token segment
+      const seg = t.split('.')[0];
+      const found = existingStored.find(enc => {
+        const dec = decryptToken(enc);
+        return dec && dec.split('.')[0] === seg;
+      });
+      return found || encryptToken(t);
+    }
+    return encryptToken(t);
+  });
+
   writeJSON(PATHS.config, safe);
-  saveTokens(cleanedTokens);
-  appendLog(`[Config] Saved - ${cleanedTokens.length} token(s)`);
+  saveTokens(finalTokens);
+  appendLog(`[Config] Saved - ${finalTokens.length} token(s)`);
   res.json({ ok: true });
 });
 
