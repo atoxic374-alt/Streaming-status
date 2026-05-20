@@ -15,6 +15,7 @@ const httpServer = http.createServer(app);
 const wss = new WebSocketServer({ server: httpServer });
 
 const BASE_PORT = process.env.PORT || 5000;
+let dashboardPort = Number(BASE_PORT) || 5000;
 const ROOT = path.join(__dirname, '..');
 
 // Bind to 0.0.0.0 on Replit or any remote host (REMOTE=1), else localhost only
@@ -249,7 +250,12 @@ async function sendWebhook(event, extra = {}) {
 // ── Bot Process ────────────────────────────────────────────────────
 function startBot() {
   if (botProc) return false;
-  const env = { ...process.env, WEATHER_API_KEY: process.env.WEATHER_API_KEY };
+  const env = {
+    ...process.env,
+    DASHBOARD_PORT: String(dashboardPort),
+    PORT: String(dashboardPort),
+    WEATHER_API_KEY: process.env.WEATHER_API_KEY
+  };
   botProc = spawn(process.execPath, [BOT_ENTRY], { cwd: ROOT, env });
   sessionStart = Date.now();
   rotationCounts = defaultRotationCounts();
@@ -527,23 +533,255 @@ function isLocalUrl(url) {
   } catch { return false; }
 }
 
-// ── Discord CDN Upload (DM-to-self / Saved Messages) ─────────────
-// Discord's "DM to self" creates a Saved Messages channel — this is
-// a supported API feature used to get a publicly accessible CDN URL.
+// Any dashboard-served upload URL must be converted to Discord CDN before
+// it is used in Rich Presence. This covers localhost and public tunnel URLs.
+function isManagedUploadUrl(url) {
+  const fileName = uploadFileNameFromUrl(url);
+  if (!fileName) return false;
+  if (isLocalUrl(url)) return true;
+  if (fs.existsSync(path.join(PATHS.uploads, fileName))) return true;
+  return !!manifestEntryForFile(loadManifest(), fileName);
+}
+
+function safeDecodeUrlPart(value) {
+  try { return decodeURIComponent(value); }
+  catch { return value; }
+}
+
+function uploadFileNameFromUrl(url) {
+  try {
+    const pathname = new URL(url).pathname;
+    const raw = pathname.split('/uploads/').pop() || '';
+    const fileName = path.basename(safeDecodeUrlPart(raw));
+    return fileName && fileName !== 'manifest.json' ? fileName : null;
+  } catch {
+    const raw = String(url || '').split('/uploads/').pop()?.split(/[?#]/)[0] || '';
+    const fileName = path.basename(safeDecodeUrlPart(raw));
+    return fileName && fileName !== 'manifest.json' ? fileName : null;
+  }
+}
+
+function manifestEntryForFile(manifest, fileName) {
+  if (!fileName) return null;
+  return manifest[fileName] || Object.values(manifest).find(e => e?.fileName === fileName) || null;
+}
+
+async function resolveManagedUploadUrl(url, manifest = loadManifest()) {
+  const fileName = uploadFileNameFromUrl(url);
+  if (!fileName) {
+    return { url, status: 'missing', detail: 'Upload file name could not be read from URL' };
+  }
+
+  const entry = manifestEntryForFile(manifest, fileName);
+  if (entry?.cdnUrl && !isExpiredCdnUrl(entry.cdnUrl)) {
+    return { url: entry.cdnUrl, status: 'refreshed', detail: 'Resolved upload URL to existing Discord CDN URL' };
+  }
+
+  const localFile = entry?.fileName || (fs.existsSync(path.join(PATHS.uploads, fileName)) ? fileName : null);
+  if (!localFile) {
+    return { url: null, status: 'missing', detail: 'Local upload file is missing; re-upload the image' };
+  }
+
+  const fresh = await refreshCdnUrl(localFile);
+  if (fresh) Object.assign(manifest, loadManifest());
+  return fresh
+    ? { url: fresh, status: 'refreshed', detail: 'Uploaded local file to Discord CDN' }
+    : { url: null, status: 'error', detail: 'Could not upload to Discord CDN; check token configuration' };
+}
+
+// ── Discord CDN Upload (configured DM/server destination) ─────────
 // ── Session cache: token + channel verified once per batch ────────
 // Avoids repeating 2 API calls per image when uploading many at once.
 // Cache lives for 10 minutes; invalidated when token changes.
 let _cdnSession = null; // { token, username, channelId, validUntil }
+let _tokenAccountCache = new Map(); // token -> { account, validUntil }
+let _lastCdnUploadAt = new Map(); // upload target key -> timestamp
 
-function getCdnSession(token) {
+const DISCORD_UPLOAD_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0 Safari/537.36';
+const MIN_CDN_UPLOAD_INTERVAL_MS = 4000;
+const HUMAN_CDN_UPLOAD_INTERVAL_MS = 7000;
+
+function discordApiHeaders(token, ua) {
+  return {
+    Authorization: token,
+    'Content-Type': 'application/json',
+    'User-Agent': ua,
+  };
+}
+
+function uploadTargetConfigFromEnv() {
+  const type = String(process.env.DISCORD_UPLOAD_TARGET_TYPE || '').trim().toLowerCase();
+  const legacyChannelId = String(process.env.DISCORD_UPLOAD_CHANNEL_ID || process.env.UPLOAD_CHANNEL_ID || '').trim();
+  const serverChannelId = String(process.env.DISCORD_UPLOAD_CHANNEL_ID || '').trim();
+  return {
+    accountId: String(process.env.DISCORD_UPLOAD_ACCOUNT_ID || '').trim(),
+    type: type === 'dm' || type === 'server' ? type : (legacyChannelId ? 'server' : 'saved'),
+    dmChannelId: String(process.env.DISCORD_UPLOAD_DM_CHANNEL_ID || '').trim(),
+    guildId: String(process.env.DISCORD_UPLOAD_GUILD_ID || '').trim(),
+    channelId: serverChannelId || legacyChannelId,
+  };
+}
+
+function normalizeUploadTarget(raw = {}) {
+  const type = String(raw.type || raw.uploadTargetType || '').trim().toLowerCase();
+  return {
+    accountId: String(raw.accountId || raw.uploadAccountId || '').trim(),
+    type: type === 'dm' || type === 'server' ? type : '',
+    dmChannelId: String(raw.dmChannelId || raw.uploadDmChannelId || '').trim(),
+    guildId: String(raw.guildId || raw.uploadGuildId || '').trim(),
+    channelId: String(raw.channelId || raw.uploadChannelId || '').trim(),
+  };
+}
+
+function getCdnSession(token, targetKey) {
   const now = Date.now();
-  if (_cdnSession && _cdnSession.token === token && _cdnSession.validUntil > now) {
+  if (_cdnSession && _cdnSession.token === token && _cdnSession.targetKey === targetKey && _cdnSession.validUntil > now) {
     return _cdnSession;
   }
   return null;
 }
 
+function uploadTargetKey(target) {
+  const account = target.accountId || 'first-valid-account';
+  if (target.type === 'dm') return `${account}:dm:${target.dmChannelId}`;
+  if (target.type === 'server') return `${account}:server:${target.guildId || 'any'}:${target.channelId}`;
+  return `${account}:saved-messages`;
+}
+
+async function fetchTokenAccount(token, ua = DISCORD_UPLOAD_UA) {
+  const cached = _tokenAccountCache.get(token);
+  if (cached && cached.validUntil > Date.now()) return cached.account;
+
+  const r = await discordJson('https://discord.com/api/v10/users/@me', token, ua);
+  if (!r.ok) throw new Error(`HTTP ${r.status} — ${r.data.message || 'invalid or expired token'}`);
+  const u = r.data;
+  const account = {
+    id: u.id,
+    username: u.global_name || u.username,
+    tag: u.discriminator && u.discriminator !== '0' ? `${u.username}#${u.discriminator}` : u.username,
+    avatar: u.avatar
+      ? `https://cdn.discordapp.com/avatars/${u.id}/${u.avatar}.${u.avatar.startsWith('a_') ? 'gif' : 'png'}?size=64`
+      : `https://cdn.discordapp.com/embed/avatars/${Number(BigInt(u.id) % 6n)}.png`,
+    masked: maskToken(token),
+  };
+  _tokenAccountCache.set(token, { account, validUntil: Date.now() + 5 * 60 * 1000 });
+  return account;
+}
+
+async function listUploadAccounts(ua = DISCORD_UPLOAD_UA) {
+  const tokens = extractTokens();
+  const results = await Promise.allSettled(tokens.map(async (token, index) => ({
+    index,
+    ...(await fetchTokenAccount(token, ua)),
+  })));
+  return results.map((r, index) => r.status === 'fulfilled'
+    ? { ...r.value, valid: true }
+    : { index, valid: false, id: '', username: `Token ${index + 1}`, tag: r.reason?.message || 'Invalid token', masked: maskToken(tokens[index] || '') });
+}
+
+async function selectUploadToken(ua = DISCORD_UPLOAD_UA, accountId = '') {
+  const tokens = extractTokens();
+  if (!tokens.length) return { error: 'No token configured' };
+
+  if (accountId) {
+    for (const token of tokens) {
+      try {
+        const account = await fetchTokenAccount(token, ua);
+        if (account.id === accountId) return { token, account };
+      } catch {}
+    }
+    return { error: `Upload account ${accountId} is not configured or token is invalid` };
+  }
+
+  for (const token of tokens) {
+    try {
+      return { token, account: await fetchTokenAccount(token, ua) };
+    } catch {}
+  }
+  return { error: 'No valid token account available' };
+}
+
+function isPrivateChannelType(type) {
+  return type === 1 || type === 3;
+}
+
+function isServerUploadChannelType(type) {
+  return type === 0 || type === 5;
+}
+
+function discordChannelName(channel) {
+  if (!channel) return 'Unknown channel';
+  if (channel.name) return channel.name;
+  const recipients = Array.isArray(channel.recipients) ? channel.recipients : [];
+  const names = recipients.map(u => u.global_name || u.username).filter(Boolean);
+  return names.length ? names.join(', ') : `Channel ${channel.id}`;
+}
+
+async function discordJson(url, token, ua, options = {}) {
+  const r = await fetch(url, {
+    ...options,
+    headers: { ...discordApiHeaders(token, ua), ...(options.headers || {}) },
+    signal: options.signal || AbortSignal.timeout(10000),
+  });
+  const data = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, data };
+}
+
+async function checkChannelWritable(channelId, token, ua) {
+  const r = await fetch(`https://discord.com/api/v10/channels/${channelId}/typing`, {
+    method: 'POST',
+    headers: discordApiHeaders(token, ua),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (r.ok || r.status === 204) return { ok: true };
+  const err = await r.json().catch(() => ({}));
+  return { ok: false, error: `HTTP ${r.status} — ${err.message || 'cannot write to this channel'}` };
+}
+
+async function validateUploadTarget(target, token, ua) {
+  target = normalizeUploadTarget(target);
+  if (!target.type) return { ok: false, error: 'Choose DM or Server upload target first' };
+
+  const channelId = target.type === 'dm' ? target.dmChannelId : target.channelId;
+  if (!channelId) return { ok: false, error: target.type === 'dm' ? 'Choose a DM first' : 'Choose a server channel first' };
+
+  const ch = await discordJson(`https://discord.com/api/v10/channels/${channelId}`, token, ua);
+  if (!ch.ok) {
+    const noun = target.type === 'dm' ? 'DM' : 'channel';
+    return { ok: false, error: `${noun} is missing or inaccessible: HTTP ${ch.status} — ${ch.data.message || 'not found'}` };
+  }
+
+  const channel = ch.data;
+  if (target.type === 'dm') {
+    if (!isPrivateChannelType(channel.type)) return { ok: false, error: 'Selected target is not a DM channel' };
+  } else {
+    if (!isServerUploadChannelType(channel.type)) return { ok: false, error: 'Selected target is not a text/announcement channel' };
+    if (target.guildId && channel.guild_id && channel.guild_id !== target.guildId) {
+      return { ok: false, error: 'Selected channel no longer belongs to the saved server' };
+    }
+  }
+
+  const writable = await checkChannelWritable(channelId, token, ua);
+  if (!writable.ok) {
+    const hint = target.type === 'dm'
+      ? 'DM exists but appears closed or not messageable'
+      : 'Channel exists but the account cannot write there';
+    return { ok: false, error: `${hint}: ${writable.error}` };
+  }
+
+  return {
+    ok: true,
+    channelId,
+    targetKey: uploadTargetKey(target),
+    destination: target.type === 'dm' ? `DM: ${discordChannelName(channel)}` : `Server channel: #${discordChannelName(channel)}`,
+    channel,
+  };
+}
+
 async function buildCdnSession(token, ua) {
+  const target = uploadTargetConfigFromEnv();
+  const targetKey = uploadTargetKey(target);
+
   // ① Verify token
   const meR = await fetch('https://discord.com/api/v10/users/@me', {
     headers: { Authorization: token, 'User-Agent': ua },
@@ -554,6 +792,24 @@ async function buildCdnSession(token, ua) {
     return { error: `HTTP ${meR.status} — ${err.message || 'invalid or expired token'}` };
   }
   const me = await meR.json();
+  if (target.accountId && me.id !== target.accountId) {
+    return { error: `Selected upload account does not match this token (${me.id})` };
+  }
+
+  if (target.type === 'dm' || target.type === 'server') {
+    const check = await validateUploadTarget(target, token, ua);
+    if (!check.ok) return { error: check.error };
+    _cdnSession = {
+      token,
+      targetKey: check.targetKey,
+      username: me.global_name || me.username,
+      channelId: check.channelId,
+      target,
+      destination: check.destination,
+      validUntil: Date.now() + 10 * 60 * 1000
+    };
+    return { session: _cdnSession };
+  }
 
   // ② Open / confirm Saved Messages channel
   const dmR = await fetch('https://discord.com/api/v10/users/@me/channels', {
@@ -570,8 +826,11 @@ async function buildCdnSession(token, ua) {
 
   _cdnSession = {
     token,
+    targetKey,
     username: me.global_name || me.username,
     channelId: dm.id,
+    target,
+    destination: 'Saved Messages',
     validUntil: Date.now() + 10 * 60 * 1000   // 10 min
   };
   return { session: _cdnSession };
@@ -582,39 +841,61 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // Returns { url: string|null, steps: [{step,status,detail}] }
 // Pass `sessionHint` (pre-built session) to skip token/channel steps in batch mode.
-async function uploadToDiscordCDN(imageBuffer, mimeType, fileName, sessionHint = null) {
+async function uploadToDiscordCDN(imageBuffer, mimeType, fileName, sessionHint = null, options = {}) {
   const steps = [];
   const pass = (step, detail) => { steps.push({ step, status: 'ok',   detail }); appendLog(`[Image] ✓ ${step}: ${detail}`); };
   const fail = (step, detail) => { steps.push({ step, status: 'error', detail }); appendLog(`[Image] ✗ ${step}: ${detail}`, true); };
   const info = (step, detail) => { steps.push({ step, status: 'info', detail }); appendLog(`[Image]   ${step}: ${detail}`); };
 
-  const tokens = extractTokens();
-  if (!tokens.length) {
-    fail('Token check', 'No token configured — add a token in the Tokens section first');
+  info('File check', `${fileName} · ${(imageBuffer.length / 1024).toFixed(1)} KB · ${mimeType}`);
+
+  const target = uploadTargetConfigFromEnv();
+  const selected = await selectUploadToken(DISCORD_UPLOAD_UA, target.accountId);
+  if (selected.error) {
+    fail('Upload account check', selected.error);
     return { url: null, steps };
   }
 
-  const token = tokens[0];
-  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0 Safari/537.36';
-  info('File check', `${fileName} · ${(imageBuffer.length / 1024).toFixed(1)} KB · ${mimeType}`);
+  const token = selected.token;
+  const ua = DISCORD_UPLOAD_UA;
 
   try {
     // ① + ② — use session cache to avoid repeating these for every image in a batch
-    let session = sessionHint || getCdnSession(token);
+    const targetKey = uploadTargetKey(target);
+    let session = sessionHint || getCdnSession(token, targetKey);
     if (session) {
-      pass('Token & channel', `${session.username} · channel ${session.channelId} (cached)`);
+      pass('Upload destination check', `${session.destination || 'channel'} ${session.channelId} (cached)`);
     } else {
       const result = await buildCdnSession(token, ua);
       if (result.error) {
-        fail('Token verification', result.error);
+        const label = result.error.includes('invalid or expired token')
+          ? 'Token verification'
+          : result.error.includes('Cannot send messages to this user')
+            ? 'Open Saved Messages'
+            : 'Upload destination check';
+        fail(label, result.error);
         return { url: null, steps };
       }
       session = result.session;
       pass('Token verification', `Logged in as ${session.username}`);
-      pass('Open Saved Messages', `Channel ready (${session.channelId})`);
+      pass('Open upload destination', `${session.destination || 'channel'} ready (${session.channelId})`);
     }
 
     // ③ Upload image — with automatic retry on Discord rate-limit (429)
+    const lastUpload = _lastCdnUploadAt.get(session.targetKey) || 0;
+    const baseUploadInterval = options.humanMode ? HUMAN_CDN_UPLOAD_INTERVAL_MS : MIN_CDN_UPLOAD_INTERVAL_MS;
+    let uploadInterval = baseUploadInterval;
+    if (options.humanMode) {
+      const humanJitter = Math.min(Math.max(Number(options.humanJitter) || 0.25, 0.05), 0.5);
+      const variance = baseUploadInterval * humanJitter;
+      uploadInterval = Math.max(MIN_CDN_UPLOAD_INTERVAL_MS, baseUploadInterval - variance + Math.random() * variance * 2);
+    }
+    const quietWait = Math.max(0, uploadInterval - (Date.now() - lastUpload));
+    if (quietWait > 0) {
+      info('Upload queue', `Waiting ${(quietWait / 1000).toFixed(1)} s before next image`);
+      await sleep(quietWait);
+    }
+
     const form = new FormData();
     form.append('files[0]', new Blob([imageBuffer], { type: mimeType }), fileName);
     form.append('payload_json', JSON.stringify({ content: '' }));
@@ -653,6 +934,7 @@ async function uploadToDiscordCDN(imageBuffer, mimeType, fileName, sessionHint =
       return { url: null, steps };
     }
     pass('Upload to Discord CDN', 'File sent — attachment URL received');
+    _lastCdnUploadAt.set(session.targetKey, Date.now());
 
     // ④ Check expiry
     const ex = new URL(cdnUrl).searchParams.get('ex');
@@ -668,6 +950,9 @@ async function uploadToDiscordCDN(imageBuffer, mimeType, fileName, sessionHint =
 
 // Re-uploads a local file to Discord CDN and refreshes the manifest
 async function refreshCdnUrl(fileName) {
+  fileName = path.basename(String(fileName || ''));
+  if (!fileName || fileName === 'manifest.json') return null;
+
   const filePath = path.join(PATHS.uploads, fileName);
   if (!fs.existsSync(filePath)) {
     appendLog(`[Image] Refresh failed — local file missing: ${fileName}`, true);
@@ -676,16 +961,25 @@ async function refreshCdnUrl(fileName) {
   const rawExt = path.extname(fileName).slice(1) || 'png';
   const mimeType = `image/${rawExt === 'jpg' ? 'jpeg' : rawExt}`;
   const data = fs.readFileSync(filePath);
+  const imageHash = crypto.createHash('sha256').update(data).digest('hex');
+  const cfg = readJSON(PATHS.config, {});
+  const richOptions = cfg.config?.options || {};
   appendLog(`[Image] CDN URL expired — re-uploading "${fileName}"…`);
-  const { url: newUrl } = await uploadToDiscordCDN(data, mimeType, fileName);
+  const { url: newUrl } = await uploadToDiscordCDN(data, mimeType, fileName, null, {
+    humanMode: richOptions.humanMode !== false,
+    humanJitter: richOptions.humanJitter,
+  });
   if (newUrl) {
     const manifest = loadManifest();
-    const entry = Object.values(manifest).find(e => e.fileName === fileName);
-    if (entry) {
-      entry.cdnUrl = newUrl;
-      entry.refreshedAt = Date.now();
-      manifest[cdnUrlKey(newUrl)] = entry;
-    }
+    const entry = manifestEntryForFile(manifest, fileName) || { fileName, filePath, mimeType, uploadedAt: Date.now() };
+    entry.fileName = fileName;
+    entry.filePath = filePath;
+    entry.mimeType = entry.mimeType || mimeType;
+    entry.cdnUrl = newUrl;
+    entry.sha256 = entry.sha256 || imageHash;
+    entry.refreshedAt = Date.now();
+    manifest[fileName] = entry;
+    manifest[cdnUrlKey(newUrl)] = entry;
     saveManifest(manifest);
   }
   return newUrl;
@@ -694,6 +988,12 @@ async function refreshCdnUrl(fileName) {
 // ── API: Image Upload ─────────────────────────────────────────────
 app.post('/api/uploads', async (req, res) => {
   const { name, dataUrl } = req.body || {};
+  const cfg = readJSON(PATHS.config, {});
+  const richOptions = cfg.config?.options || {};
+  const hasHumanModeInput = Object.prototype.hasOwnProperty.call(req.body || {}, 'humanMode');
+  const humanMode = hasHumanModeInput
+    ? req.body?.humanMode !== false && req.body?.humanMode !== 'false'
+    : richOptions.humanMode !== false;
 
   // ── Validate format
   const match = String(dataUrl || '').match(/^data:image\/(png|jpe?g|gif|webp|avif);base64,([a-z0-9+/=\s]+)$/i);
@@ -719,6 +1019,7 @@ app.post('/api/uploads', async (req, res) => {
 
   // ── Save locally (always — used for CDN refresh if URL expires)
   ensureDir(PATHS.uploads);
+  const imageHash = crypto.createHash('sha256').update(data).digest('hex');
   const safeName = String(name || `asset.${ext}`).replace(/[^a-z0-9._-]/gi, '-').slice(-80);
   const normalizedName = safeName.toLowerCase().endsWith(`.${ext}`) ? safeName : `${safeName}.${ext}`;
   const fileName = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}-${normalizedName}`;
@@ -731,23 +1032,50 @@ app.post('/api/uploads', async (req, res) => {
 
   // ── Upload to Discord CDN for a publicly accessible URL
   const mimeType = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
-  const { url: cdnUrl, steps: cdnSteps } = await uploadToDiscordCDN(data, mimeType, fileName);
-  const allSteps = [saveStep, ...cdnSteps];
-
   const manifest = loadManifest();
+  const localUrl = `${getPublicBaseUrl(req)}/uploads/${encodeURIComponent(fileName)}`;
   let finalUrl;
+  const existing = Object.values(manifest).find(entry =>
+    entry?.sha256 === imageHash && entry?.cdnUrl && !isExpiredCdnUrl(entry.cdnUrl));
+
+  if (existing) {
+    finalUrl = existing.cdnUrl;
+    const entry = { fileName, filePath, cdnUrl: finalUrl, mimeType, localUrl, sha256: imageHash, uploadedAt: Date.now(), dedupedFrom: existing.fileName || null };
+    manifest[fileName] = entry;
+    manifest[cdnUrlKey(finalUrl)] = entry;
+    saveManifest(manifest);
+    appendLog(`[Image] Duplicate detected — reused existing CDN URL`);
+    return res.json({
+      ok: true,
+      url: finalUrl,
+      cdn: true,
+      deduped: true,
+      steps: [
+        saveStep,
+        { step: 'Duplicate check', status: 'ok', detail: 'Image already exists — reused CDN URL without sending again' },
+      ],
+    });
+  }
+
+  const { url: cdnUrl, steps: cdnSteps } = await uploadToDiscordCDN(data, mimeType, fileName, null, {
+    humanMode,
+    humanJitter: richOptions.humanJitter,
+  });
+  const allSteps = [saveStep, ...cdnSteps];
 
   if (cdnUrl) {
     finalUrl = cdnUrl;
-    manifest[cdnUrlKey(cdnUrl)] = { fileName, filePath, cdnUrl, mimeType, uploadedAt: Date.now() };
+    const entry = { fileName, filePath, cdnUrl, mimeType, localUrl, sha256: imageHash, uploadedAt: Date.now() };
+    manifest[fileName] = entry;
+    manifest[cdnUrlKey(cdnUrl)] = entry;
     saveManifest(manifest);
     appendLog(`[Image] Ready — using Discord CDN URL`);
     return res.json({ ok: true, url: finalUrl, cdn: true, steps: allSteps });
   }
 
   // ── Fallback: local server URL (only reachable if server has public domain)
-  finalUrl = `${getPublicBaseUrl(req)}/uploads/${encodeURIComponent(fileName)}`;
-  manifest[fileName] = { fileName, filePath, cdnUrl: null, mimeType, localUrl: finalUrl, uploadedAt: Date.now() };
+  finalUrl = localUrl;
+  manifest[fileName] = { fileName, filePath, cdnUrl: null, mimeType, localUrl: finalUrl, sha256: imageHash, uploadedAt: Date.now() };
   saveManifest(manifest);
   appendLog(`[Image] Warning — no CDN URL, using local fallback (add a token first for Discord CDN upload)`);
   const warnStep = { step: 'CDN upload', status: 'warn', detail: 'Skipped — no token. Image saved locally but may not display in Rich Presence.' };
@@ -768,26 +1096,23 @@ app.post('/api/uploads/check', async (req, res) => {
     const url = String(rawUrl || '').trim();
     if (!url) continue;
 
-    // ── External (non-Discord, non-local) — user manages it themselves
-    if (!url.includes('cdn.discordapp.com') && !isLocalUrl(url)) {
-      results.push({ url, status: 'external', newUrl: url, detail: 'External URL — not managed by StreamDash' });
+    // ── Dashboard upload URL (localhost, Replit, tunnel, etc.) → force CDN
+    if (isManagedUploadUrl(url)) {
+      const resolved = await resolveManagedUploadUrl(url, manifest);
+      results.push({
+        url,
+        status: resolved.status,
+        newUrl: resolved.url,
+        detail: resolved.detail,
+      });
       continue;
     }
 
-    // ── Local server URL → try to resolve to CDN
-    if (isLocalUrl(url)) {
-      const fileName = decodeURIComponent(url.split('/uploads/').pop() || '');
-      const entry = manifest[fileName] || Object.values(manifest).find(e => e.fileName === fileName);
-      if (entry?.cdnUrl && !isExpiredCdnUrl(entry.cdnUrl)) {
-        results.push({ url, status: 'refreshed', newUrl: entry.cdnUrl, detail: 'Resolved local URL → existing CDN URL' });
-      } else if (entry?.fileName) {
-        const fresh = await refreshCdnUrl(entry.fileName);
-        results.push(fresh
-          ? { url, status: 'refreshed', newUrl: fresh,  detail: 'Re-uploaded from local file to CDN' }
-          : { url, status: 'error',     newUrl: null,   detail: 'Re-upload failed — check token configuration' });
-      } else {
-        results.push({ url, status: 'missing', newUrl: null, detail: 'File not tracked in manifest — re-upload manually' });
-      }
+    // ── External (non-Discord, non-dashboard-upload) — user manages it
+    if (!url.includes('cdn.discordapp.com')) {
+      results.push(isLocalUrl(url)
+        ? { url, status: 'error', newUrl: null, detail: 'Local URL is not reachable by Discord; use an uploaded image' }
+        : { url, status: 'external', newUrl: url, detail: 'External URL — not managed by StreamDash' });
       continue;
     }
 
@@ -822,21 +1147,16 @@ app.get('/api/uploads/resolve', async (req, res) => {
   const url = String(req.query.url || '').trim();
   if (!url) return res.status(400).json({ error: 'url param required' });
 
-  // Case 1: URL is from local server — return CDN URL from manifest if available
-  if (isLocalUrl(url)) {
-    const fileName = decodeURIComponent(url.split('/uploads/').pop() || '');
+  // Case 1: URL is from dashboard uploads — return/refresh Discord CDN URL
+  if (isManagedUploadUrl(url)) {
     const manifest = loadManifest();
-    const entry = manifest[fileName] || Object.values(manifest).find(e => e.fileName === fileName);
-    if (entry?.cdnUrl && !isExpiredCdnUrl(entry.cdnUrl)) {
-      appendLog(`[Image] Resolved local URL to CDN: ${fileName}`);
-      return res.json({ url: entry.cdnUrl, refreshed: false });
+    const resolved = await resolveManagedUploadUrl(url, manifest);
+    if (resolved.url) {
+      appendLog(`[Image] Resolved upload URL to CDN: ${uploadFileNameFromUrl(url) || 'unknown file'}`);
+      return res.json({ url: resolved.url, refreshed: resolved.url !== url });
     }
-    if (entry?.fileName) {
-      const fresh = await refreshCdnUrl(entry.fileName);
-      if (fresh) return res.json({ url: fresh, refreshed: true });
-    }
-    appendLog(`[Image] Local URL unresolvable — no CDN entry for: ${fileName}`, true);
-    return res.json({ url, refreshed: false, warning: 'Could not resolve to CDN URL' });
+    appendLog(`[Image] Upload URL unresolvable — ${resolved.detail}`, true);
+    return res.json({ url, refreshed: false, warning: resolved.detail });
   }
 
   // Case 2: Discord CDN URL that has expired — find in manifest and refresh
@@ -927,27 +1247,24 @@ app.get('/api/ratelimits', (_, res) => {
 // and returns a summary so the frontend can show what happened.
 async function preStartImageCheck() {
   const cfg = readJSON(PATHS.config, {});
+  const presenceCfg = cfg.config || {};
   const allUrls = [
-    ...(cfg.bigimg   || []),
-    ...(cfg.smallimg || [])
+    ...(presenceCfg.bigimg   || []),
+    ...(presenceCfg.smallimg || [])
   ].filter(Boolean);
   if (!allUrls.length) return { checked: 0, refreshed: 0, failed: 0 };
 
   const manifest = loadManifest();
   let refreshed = 0, failed = 0, changed = false;
+  const replacements = [];
 
   const tryRefresh = async (url) => {
     if (!url) return url;
-    if (!isLocalUrl(url) && !isExpiredCdnUrl(url)) return url;   // already valid
-
-    if (isLocalUrl(url)) {
-      // Local URL — look up manifest for CDN copy
-      const fileName = decodeURIComponent(url.split('/uploads/').pop() || '');
-      const entry = manifest[fileName] || Object.values(manifest).find(e => e.fileName === fileName);
-      if (entry?.cdnUrl && !isExpiredCdnUrl(entry.cdnUrl)) return entry.cdnUrl;
-      if (entry?.fileName) return await refreshCdnUrl(entry.fileName) || null;
-      return null;
+    if (isManagedUploadUrl(url)) {
+      const resolved = await resolveManagedUploadUrl(url, manifest);
+      return resolved.url || null;
     }
+    if (!isExpiredCdnUrl(url)) return url;   // already valid/external
 
     // Expired Discord CDN URL — find local backup + re-upload
     const entry = manifest[cdnUrlKey(url)];
@@ -955,15 +1272,27 @@ async function preStartImageCheck() {
     return null;
   };
 
-  for (let i = 0; i < (cfg.bigimg || []).length; i++) {
-    const fresh = await tryRefresh(cfg.bigimg[i]);
+  for (let i = 0; i < (presenceCfg.bigimg || []).length; i++) {
+    const oldUrl = presenceCfg.bigimg[i];
+    const fresh = await tryRefresh(oldUrl);
     if (fresh === null)                  { failed++;    }
-    else if (fresh !== cfg.bigimg[i])    { cfg.bigimg[i] = fresh; refreshed++; changed = true; }
+    else if (fresh !== oldUrl)    {
+      presenceCfg.bigimg[i] = fresh;
+      replacements.push({ key: 'bigimg', index: i, oldUrl, newUrl: fresh });
+      refreshed++;
+      changed = true;
+    }
   }
-  for (let i = 0; i < (cfg.smallimg || []).length; i++) {
-    const fresh = await tryRefresh(cfg.smallimg[i]);
+  for (let i = 0; i < (presenceCfg.smallimg || []).length; i++) {
+    const oldUrl = presenceCfg.smallimg[i];
+    const fresh = await tryRefresh(oldUrl);
     if (fresh === null)                   { failed++;     }
-    else if (fresh !== cfg.smallimg[i])   { cfg.smallimg[i] = fresh; refreshed++; changed = true; }
+    else if (fresh !== oldUrl)   {
+      presenceCfg.smallimg[i] = fresh;
+      replacements.push({ key: 'smallimg', index: i, oldUrl, newUrl: fresh });
+      refreshed++;
+      changed = true;
+    }
   }
 
   if (changed) {
@@ -972,7 +1301,7 @@ async function preStartImageCheck() {
   }
   if (failed) appendLog(`[Image] Pre-start: ${failed} image URL(s) could not be refreshed — bot will try again at runtime`, true);
 
-  return { checked: allUrls.length, refreshed, failed };
+  return { checked: allUrls.length, refreshed, failed, replacements };
 }
 
 // ── API: Runtime ───────────────────────────────────────────────────
@@ -1003,15 +1332,16 @@ app.post('/api/runtime/refresh', (_, res) => {
 // Fetches the user's own applications from discord.com/developers/applications
 // using their selfbot token — returns list of apps with id, name, icon
 app.get('/api/discord-apps', async (req, res) => {
-  const tokens = extractTokens();
-  if (!tokens.length) return res.json({ apps: [], error: 'No token configured — add a token first' });
+  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9166 Chrome/124.0.6367.243 Electron/30.2.0 Safari/537.36';
+  const picked = await selectUploadToken(ua, String(req.query.accountId || process.env.DISCORD_APP_ACCOUNT_ID || '').trim());
+  if (picked.error) return res.json({ apps: [], error: picked.error });
 
   try {
     const r = await fetch('https://discord.com/api/v10/applications?with_team_applications=true', {
       headers: {
-        'Authorization': tokens[0],
+        'Authorization': picked.token,
         'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9166 Chrome/124.0.6367.243 Electron/30.2.0 Safari/537.36',
+        'User-Agent': ua,
       },
       signal: AbortSignal.timeout(9000)
     });
@@ -1037,8 +1367,8 @@ app.get('/api/discord-apps', async (req, res) => {
       hasRichPresence: !!(a.flags & (1 << 9)), // RPC_HAS_CONNECTED flag
     }));
 
-    appendLog(`[Apps] Fetched ${apps.length} application(s) from Developer Portal`);
-    res.json({ apps });
+    appendLog(`[Apps] Fetched ${apps.length} application(s) from Developer Portal for ${picked.account?.username || 'selected account'}`);
+    res.json({ apps, account: picked.account });
   } catch (e) {
     res.json({ apps: [], error: e.message });
   }
@@ -1078,6 +1408,82 @@ app.post('/api/tokens/validate', async (req, res) => {
     }
   }));
   res.json(results.map(r => r.value || { valid: false, error: r.reason?.message || 'Unknown error' }));
+});
+
+// ── API: Image Upload Destinations ─────────────────────────────────
+app.get('/api/upload-targets', async (req, res) => {
+  const ua = DISCORD_UPLOAD_UA;
+  const guildId = String(req.query.guildId || '').trim();
+  const selected = uploadTargetConfigFromEnv();
+  const accountId = String(req.query.accountId || selected.accountId || '').trim();
+  const out = { accounts: [], dms: [], guilds: [], channels: [], selected };
+
+  try {
+    out.accounts = await listUploadAccounts(ua);
+    const picked = await selectUploadToken(ua, accountId);
+    if (picked.error) return res.json({ ...out, error: picked.error });
+    const token = picked.token;
+    out.account = picked.account;
+
+    const [dmR, guildR] = await Promise.all([
+      discordJson('https://discord.com/api/v10/users/@me/channels', token, ua),
+      discordJson('https://discord.com/api/v10/users/@me/guilds', token, ua),
+    ]);
+
+    if (dmR.ok && Array.isArray(dmR.data)) {
+      out.dms = dmR.data
+        .filter(ch => isPrivateChannelType(ch.type))
+        .map(ch => ({
+          id: ch.id,
+          type: ch.type,
+          name: discordChannelName(ch),
+          recipients: (ch.recipients || []).map(u => ({
+            id: u.id,
+            username: u.global_name || u.username,
+            tag: u.discriminator && u.discriminator !== '0' ? `${u.username}#${u.discriminator}` : u.username,
+          })),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } else {
+      out.dmError = dmR.data?.message || `HTTP ${dmR.status}`;
+    }
+
+    if (guildR.ok && Array.isArray(guildR.data)) {
+      out.guilds = guildR.data
+        .map(g => ({ id: g.id, name: g.name || `Server ${g.id}` }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } else {
+      out.guildError = guildR.data?.message || `HTTP ${guildR.status}`;
+    }
+
+    if (guildId) {
+      const chR = await discordJson(`https://discord.com/api/v10/guilds/${guildId}/channels`, token, ua);
+      if (chR.ok && Array.isArray(chR.data)) {
+        out.channels = chR.data
+          .filter(ch => isServerUploadChannelType(ch.type))
+          .map(ch => ({ id: ch.id, guildId: ch.guild_id || guildId, name: ch.name || `channel-${ch.id}`, type: ch.type, parentId: ch.parent_id || '' }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+      } else {
+        out.channelError = chR.data?.message || `HTTP ${chR.status}`;
+      }
+    }
+
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ error: e.message, ...out });
+  }
+});
+
+app.post('/api/upload-targets/validate', async (req, res) => {
+  const ua = DISCORD_UPLOAD_UA;
+  const target = normalizeUploadTarget(req.body?.target || req.body || {});
+  const picked = await selectUploadToken(ua, target.accountId);
+  if (picked.error) return res.status(400).json({ ok: false, error: picked.error });
+
+  const token = picked.token;
+  const check = await validateUploadTarget(target, token, ua);
+  if (!check.ok) return res.status(400).json({ ok: false, error: check.error });
+  res.json({ ok: true, targetKey: check.targetKey, destination: check.destination, channelId: check.channelId, account: picked.account });
 });
 
 // ── API: Profiles ──────────────────────────────────────────────────
@@ -1241,10 +1647,16 @@ app.get('/api/env', (_, res) => {
   res.json({
     hasWebhook: !!(process.env.DISCORD_WEBHOOK && process.env.DISCORD_WEBHOOK.startsWith('http')),
     webhookUrl: process.env.DISCORD_WEBHOOK || '',
+    appAccountId: process.env.DISCORD_APP_ACCOUNT_ID || '',
+    uploadAccountId: process.env.DISCORD_UPLOAD_ACCOUNT_ID || '',
+    uploadTargetType: process.env.DISCORD_UPLOAD_TARGET_TYPE || '',
+    uploadDmChannelId: process.env.DISCORD_UPLOAD_DM_CHANNEL_ID || '',
+    uploadGuildId: process.env.DISCORD_UPLOAD_GUILD_ID || '',
+    uploadChannelId: process.env.DISCORD_UPLOAD_CHANNEL_ID || '',
   });
 });
 app.post('/api/env', (req, res) => {
-  const { webhookUrl } = req.body;
+  const { webhookUrl, appAccountId, uploadAccountId, uploadTargetType, uploadDmChannelId, uploadGuildId, uploadChannelId } = req.body;
   let content = '';
   try { content = fs.readFileSync(PATHS.env, 'utf8'); } catch {}
   const lines = content.split('\n').filter(Boolean);
@@ -1254,6 +1666,14 @@ app.post('/api/env', (req, res) => {
     else if (i >= 0) lines.splice(i, 1);
   };
   if (webhookUrl !== undefined) { set('DISCORD_WEBHOOK', webhookUrl); process.env.DISCORD_WEBHOOK = webhookUrl; }
+  if (appAccountId !== undefined) { set('DISCORD_APP_ACCOUNT_ID', appAccountId); process.env.DISCORD_APP_ACCOUNT_ID = appAccountId; }
+  if (uploadAccountId !== undefined) { set('DISCORD_UPLOAD_ACCOUNT_ID', uploadAccountId); process.env.DISCORD_UPLOAD_ACCOUNT_ID = uploadAccountId; _cdnSession = null; }
+  if (uploadTargetType !== undefined) { set('DISCORD_UPLOAD_TARGET_TYPE', uploadTargetType); process.env.DISCORD_UPLOAD_TARGET_TYPE = uploadTargetType; _cdnSession = null; }
+  if (uploadDmChannelId !== undefined) { set('DISCORD_UPLOAD_DM_CHANNEL_ID', uploadDmChannelId); process.env.DISCORD_UPLOAD_DM_CHANNEL_ID = uploadDmChannelId; _cdnSession = null; }
+  if (uploadGuildId !== undefined) { set('DISCORD_UPLOAD_GUILD_ID', uploadGuildId); process.env.DISCORD_UPLOAD_GUILD_ID = uploadGuildId; _cdnSession = null; }
+  if (uploadChannelId !== undefined) { set('DISCORD_UPLOAD_CHANNEL_ID', uploadChannelId); process.env.DISCORD_UPLOAD_CHANNEL_ID = uploadChannelId; _cdnSession = null; }
+  set('DISCORD_UPLOAD_WEBHOOK', '');
+  set('UPLOAD_WEBHOOK_URL', '');
   fs.writeFileSync(PATHS.env, lines.join('\n') + '\n', 'utf8');
   appendLog('[Settings] Environment updated');
   res.json({ ok: true });
@@ -1315,6 +1735,8 @@ ensureFile(PATHS.schedule, { enabled: false, startTime: '20:00', stopTime: '00:0
 ensureDir(PATHS.uploads);
 
 findAvailablePort(Number(BASE_PORT)).then((PORT) => {
+  dashboardPort = PORT;
+  process.env.DASHBOARD_PORT = String(PORT);
   httpServer.listen(PORT, BIND_HOST, () => {
     const url = `http://localhost:${PORT}`;
     console.log(`Dashboard running on ${url}`);

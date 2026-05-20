@@ -30,6 +30,31 @@ function setUploadBusy(delta, current = 0, total = 0) {
   }
 }
 
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function setImageQueueProgress({ fileName = '', current = 0, total = 0, percent = 0, stage = '', done = false } = {}) {
+  const panel = $('imageQueueProgress');
+  if (!panel) return;
+  const pct = Math.max(0, Math.min(100, Math.round(percent)));
+  panel.style.display = done ? 'none' : 'block';
+  if (done) return;
+  if ($('imageQueueTitle')) $('imageQueueTitle').textContent = total > 1 && current
+    ? `${fileName || 'Image'} (${current}/${total})`
+    : (fileName || 'Image upload');
+  if ($('imageQueuePercent')) $('imageQueuePercent').textContent = `${pct}%`;
+  if ($('imageQueueBar')) $('imageQueueBar').style.width = `${pct}%`;
+  if ($('imageQueueStage')) $('imageQueueStage').textContent = stage || 'Working…';
+}
+
+function startProgressDrift(fileName, current, total, from = 45, to = 88, stage = 'Waiting for CDN response…') {
+  let pct = from;
+  setImageQueueProgress({ fileName, current, total, percent: pct, stage });
+  return setInterval(() => {
+    pct = Math.min(to, pct + 3);
+    setImageQueueProgress({ fileName, current, total, percent: pct, stage });
+  }, 850);
+}
+
 // ── Resolve MIME type — fallback to extension for GIF/etc ─────────
 function guessMime(file) {
   if (file.type && file.type.startsWith('image/')) return file.type;
@@ -53,6 +78,8 @@ const API = {
   schedule:    '/api/schedule',
   webhookTest: '/api/webhook/test',
   env:         '/api/env',
+  uploadTargets: '/api/upload-targets',
+  uploadTargetValidate: '/api/upload-targets/validate',
   logs:        '/api/logs',
   export:      '/api/export',
   import:      '/api/import',
@@ -105,6 +132,13 @@ const S = {
     tracks: [],
     activeTrack: 0,
   },
+  uploadTargets: {
+    accounts: [],
+    dms: [],
+    guilds: [],
+    channels: [],
+  },
+  smartOptions: {},
   _editingField: null,
 };
 
@@ -747,7 +781,15 @@ async function loadSettings() {
 
 async function loadEnv() {
   const d = await get(API.env);
+  S.env = d || {};
   if ($('webhookUrl')) $('webhookUrl').value = d.webhookUrl || '';
+  if ($('appAccountId')) $('appAccountId').dataset.saved = d.appAccountId || '';
+  if ($('uploadAccountId')) $('uploadAccountId').dataset.saved = d.uploadAccountId || '';
+  if ($('uploadTargetType')) $('uploadTargetType').value = d.uploadTargetType === 'server' ? 'server' : 'dm';
+  if ($('uploadDmChannelId')) $('uploadDmChannelId').dataset.saved = d.uploadDmChannelId || '';
+  if ($('uploadGuildId')) $('uploadGuildId').dataset.saved = d.uploadGuildId || '';
+  if ($('uploadChannelId')) $('uploadChannelId').value = d.uploadChannelId || '';
+  renderUploadTargetMode();
 }
 
 function updateNavBadges() {
@@ -1331,37 +1373,66 @@ async function uploadImages(files, key) {
   if (!valid.length) return;
 
   const total = valid.length;
+  const humanMode = $('humanModeEnabled')?.checked !== false;
   setUploadBusy(+1, 1, total);
   try {
     for (let i = 0; i < valid.length; i++) {
       const file = valid[i];
       setUploadBusy(0, i + 1, total);          // update progress counter
       const mime = guessMime(file);
+      let drift = null;
       try {
+        setImageQueueProgress({ fileName: file.name, current: i + 1, total, percent: 8, stage: 'Reading local file…' });
         const dataUrl = await new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload  = () => resolve(reader.result);
           reader.onerror = () => reject(new Error('Could not read file'));
           reader.readAsDataURL(file);
         });
+        setImageQueueProgress({ fileName: file.name, current: i + 1, total, percent: 28, stage: 'Preparing image payload…' });
         // Ensure correct MIME in the data URL (critical for GIF)
         const fixedDataUrl = dataUrl.replace(/^data:([^;]+);base64,/, `data:${mime};base64,`);
-        const r = await post(API.upload, { name: file.name, dataUrl: fixedDataUrl });
+        drift = startProgressDrift(
+          file.name,
+          i + 1,
+          total,
+          42,
+          88,
+          humanMode ? 'Saving through Human mode image queue…' : 'Saving locally and requesting CDN URL…'
+        );
+        const r = await post(API.upload, { name: file.name, dataUrl: fixedDataUrl, humanMode });
+        if (drift) clearInterval(drift);
         showUploadStatus(file.name, r);
         if (r.ok && r.url) {
+          setImageQueueProgress({ fileName: file.name, current: i + 1, total, percent: 100, stage: r.deduped ? 'Reused existing CDN URL' : 'CDN URL ready' });
           S.fields[key].push(r.url);
           if (r.cdn) toast(`"${file.name}" ready on Discord CDN`, 'success');
           else toast(r.warning || 'Saved locally — add a token for CDN upload', 'warn');
         } else {
+          setImageQueueProgress({ fileName: file.name, current: i + 1, total, percent: 100, stage: 'Upload failed' });
           toast(r.error || 'Upload failed', 'error');
         }
+        await sleep(650);
       } catch (e) {
+        if (drift) clearInterval(drift);
+        setImageQueueProgress({ fileName: file.name, current: i + 1, total, percent: 100, stage: 'Upload failed' });
         showUploadStatus(file.name, { ok: false, steps: [{ step: 'Read file', status: 'error', detail: e.message }] });
         toast(e.message || 'Upload failed', 'error');
+      }
+      if (i < valid.length - 1) {
+        setImageQueueProgress({
+          fileName: valid[i + 1].name,
+          current: i + 2,
+          total,
+          percent: 0,
+          stage: humanMode ? 'Human mode queue pause before next image…' : 'Waiting before next image…'
+        });
+        await sleep(humanMode ? 800 : 500);
       }
     }
   } finally {
     setUploadBusy(-1);
+    setImageQueueProgress({ done: true });
     resetPreviewRotation();
     renderStreamEditors();
     startPreviewRotation();
@@ -1389,20 +1460,34 @@ async function uploadSpotifyArt(files, index = S.spotify.activeTrack) {
   }
 
   setUploadBusy(+1);
+  const humanMode = $('humanModeEnabled')?.checked !== false;
+  let drift = null;
   try {
+    setImageQueueProgress({ fileName: file.name, current: 1, total: 1, percent: 8, stage: 'Reading local file…' });
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload  = () => resolve(reader.result);
       reader.onerror = () => reject(new Error('Could not read file'));
       reader.readAsDataURL(file);
     });
+    setImageQueueProgress({ fileName: file.name, current: 1, total: 1, percent: 28, stage: 'Preparing image payload…' });
     const fixedDataUrl = dataUrl.replace(
       /^data:([^;]+);base64,/,
       `data:${mime};base64,`
     );
-    const r = await post(API.upload, { name: file.name, dataUrl: fixedDataUrl });
+    drift = startProgressDrift(
+      file.name,
+      1,
+      1,
+      42,
+      88,
+      humanMode ? 'Saving through Human mode image queue…' : 'Saving locally and requesting CDN URL…'
+    );
+    const r = await post(API.upload, { name: file.name, dataUrl: fixedDataUrl, humanMode });
+    if (drift) clearInterval(drift);
     showUploadStatus(file.name, r);
     if (r.ok && r.url) {
+      setImageQueueProgress({ fileName: file.name, current: 1, total: 1, percent: 100, stage: r.deduped ? 'Reused existing CDN URL' : 'CDN URL ready' });
       S.spotify.activeTrack = Math.max(0, Math.min(Number(index) || 0, S.spotify.tracks.length - 1));
       const track = activeSpotifyTrack(true);
       if (track) track.albumArtUrl = r.url;
@@ -1411,13 +1496,17 @@ async function uploadSpotifyArt(files, index = S.spotify.activeTrack) {
       if (r.cdn) toast(`Album art ready on Discord CDN`, 'success');
       else toast(r.warning || 'Saved locally — add a token for CDN upload', 'warn');
     } else {
+      setImageQueueProgress({ fileName: file.name, current: 1, total: 1, percent: 100, stage: 'Upload failed' });
       toast(r.error || 'Upload failed', 'error');
     }
   } catch (e) {
+    if (drift) clearInterval(drift);
+    setImageQueueProgress({ fileName: file.name, current: 1, total: 1, percent: 100, stage: 'Upload failed' });
     showUploadStatus(file.name, { ok: false, steps: [{ step: 'Read file', status: 'error', detail: e.message }] });
     toast(e.message || 'Upload failed', 'error');
   } finally {
     setUploadBusy(-1);
+    setImageQueueProgress({ done: true });
   }
 }
 
@@ -1648,7 +1737,9 @@ async function detectApps() {
   if (statusEl) statusEl.style.display = 'none';
   if (listEl)   listEl.style.display   = 'none';
   try {
-    const data = await get('/api/discord-apps');
+    const accountId = $('appAccountId')?.value || '';
+    if (accountId) post(API.env, { appAccountId: accountId }).catch(() => {});
+    const data = await get(`/api/discord-apps${accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''}`);
     if (data.error) { showAppsStatus(data.error, 'error'); return; }
     if (!data.apps?.length) { showAppsStatus('No applications found. <a href="https://discord.com/developers/applications" target="_blank" class="text-link" rel="noopener">Create one →</a>', 'warn'); return; }
     if (gridEl) {
@@ -2068,9 +2159,210 @@ async function testWebhook() {
 }
 
 async function saveWebhook() {
-  const url = $('webhookUrl')?.value.trim();
-  const r = await post(API.env, { webhookUrl: url });
+  const r = await post(API.env, collectEnvSettings());
   if (r.ok) toast('Webhook saved!', 'success');
+  else toast('Save failed', 'error');
+}
+
+function collectEnvSettings() {
+  return {
+    webhookUrl: $('webhookUrl')?.value.trim() || '',
+    appAccountId: $('appAccountId')?.value || '',
+    uploadAccountId: $('uploadAccountId')?.value || '',
+    uploadTargetType: $('uploadTargetType')?.value || 'dm',
+    uploadDmChannelId: $('uploadDmChannelId')?.value || '',
+    uploadGuildId: $('uploadGuildId')?.value || '',
+    uploadChannelId: $('uploadChannelId')?.value.trim() || '',
+  };
+}
+
+function currentUploadTarget() {
+  const env = collectEnvSettings();
+  return {
+    accountId: env.uploadAccountId,
+    type: env.uploadTargetType,
+    dmChannelId: env.uploadDmChannelId,
+    guildId: env.uploadGuildId,
+    channelId: env.uploadChannelId,
+  };
+}
+
+function setUploadTargetStatus(message, type = 'info') {
+  const el = $('uploadTargetStatus');
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.display = message ? '' : 'none';
+  el.style.borderColor = type === 'error' ? 'rgba(248,113,113,0.3)' : type === 'warn' ? 'rgba(251,191,36,0.3)' : 'var(--border)';
+  el.style.background = type === 'error' ? 'rgba(248,113,113,0.07)' : type === 'warn' ? 'rgba(251,191,36,0.07)' : 'var(--bg-hover)';
+  el.style.color = type === 'error' ? '#f87171' : type === 'warn' ? '#fbbf24' : 'var(--text-dim)';
+}
+
+function renderUploadTargetMode() {
+  const type = $('uploadTargetType')?.value || 'dm';
+  if ($('uploadDmFields')) $('uploadDmFields').style.display = type === 'dm' ? '' : 'none';
+  if ($('uploadServerFields')) $('uploadServerFields').style.display = type === 'server' ? '' : 'none';
+}
+
+function smartRoot(id) {
+  return document.querySelector(`.smart-select[data-smart-for="${id}"]`);
+}
+
+function closeSmartSelects(exceptId = '') {
+  document.querySelectorAll('.smart-select.open').forEach(root => {
+    if (root.dataset.smartFor !== exceptId) root.classList.remove('open');
+  });
+}
+
+function smartSelectedOption(id) {
+  const value = $(id)?.value || '';
+  return (S.smartOptions[id] || []).find(opt => opt.id === value) || null;
+}
+
+function renderSmartSelect(id, query = '') {
+  const root = smartRoot(id);
+  const input = $(id);
+  if (!root || !input) return;
+
+  const options = S.smartOptions[id] || [];
+  const selected = smartSelectedOption(id);
+  const placeholder = root.dataset.placeholder || input.dataset.emptyLabel || 'Choose';
+  const needle = String(query || '').trim().toLowerCase();
+  const filtered = options.filter(opt => {
+    if (!needle) return true;
+    return `${opt.label} ${opt.sub || ''} ${opt.id}`.toLowerCase().includes(needle);
+  });
+
+  root.innerHTML = `
+    <button class="smart-select-btn" type="button" data-smart-toggle="${escAttr(id)}">
+      <span class="smart-select-value${selected ? '' : ' muted'}">${escHtml(selected?.label || placeholder)}</span>
+      <span class="smart-select-caret"></span>
+    </button>
+    <div class="smart-select-menu">
+      <input class="smart-select-search" data-smart-search="${escAttr(id)}" placeholder="Search" value="${escAttr(query)}"/>
+      <div class="smart-select-list">
+        ${filtered.length ? filtered.map(opt => `
+          <button class="smart-option${opt.id === input.value ? ' selected' : ''}" type="button" data-smart-option="${escAttr(id)}" data-value="${escAttr(opt.id)}">
+            <span class="smart-option-main">
+              <span class="smart-option-label">${escHtml(opt.label)}</span>
+              ${opt.sub ? `<span class="smart-option-sub">${escHtml(opt.sub)}</span>` : ''}
+            </span>
+            ${opt.id === input.value ? '<span class="smart-option-check">OK</span>' : ''}
+          </button>
+        `).join('') : `<div class="smart-empty">${escHtml(options.length ? 'No matches' : (input.dataset.emptyLabel || 'No options'))}</div>`}
+      </div>
+    </div>`;
+}
+
+function setSmartValue(id, value, notify = true) {
+  const input = $(id);
+  if (!input) return;
+  input.value = value || '';
+  renderSmartSelect(id);
+  if (notify) input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function fillSelect(id, rows, selected, labelFn, emptyLabel, subFn = null) {
+  const input = $(id);
+  if (!input) return;
+
+  const options = rows
+    .map(row => ({
+      id: String(row.id || ''),
+      label: String(labelFn(row) || row.id || ''),
+      sub: subFn ? String(subFn(row) || '') : '',
+    }))
+    .filter(opt => opt.id);
+
+  S.smartOptions[id] = options;
+  input.dataset.emptyLabel = emptyLabel || 'No options';
+
+  const current = input.value || '';
+  const next = options.some(opt => opt.id === selected) ? selected
+    : options.some(opt => opt.id === current) ? current
+    : options[0]?.id || '';
+  input.value = next;
+  renderSmartSelect(id);
+}
+
+function syncAccountSelects(accounts = []) {
+  const valid = accounts.filter(a => a.valid && a.id);
+  const label = a => `${a.username || a.tag || a.id} (${a.id})`;
+  const savedUpload = $('uploadAccountId')?.dataset.saved || '';
+  const savedApp = $('appAccountId')?.dataset.saved || savedUpload || '';
+  const currentUpload = $('uploadAccountId')?.value || '';
+  const currentApp = $('appAccountId')?.value || '';
+  fillSelect('uploadAccountId', valid, currentUpload || savedUpload || valid[0]?.id, label, 'No valid accounts', a => a.masked || a.id);
+  fillSelect('appAccountId', valid, currentApp || savedApp || valid[0]?.id, label, 'No valid accounts', a => a.masked || a.id);
+}
+
+async function loadUploadTargets(options = {}) {
+  const silent = options.silent === true;
+  const btn = $('loadUploadTargetsBtn');
+  if (btn && !silent) setBusyButton(btn, true, 'Loading...');
+  try {
+    const accountId = $('uploadAccountId')?.value || $('uploadAccountId')?.dataset.saved || '';
+    const guildId = $('uploadGuildId')?.value || $('uploadGuildId')?.dataset.saved || '';
+    const query = new URLSearchParams();
+    if (accountId) query.set('accountId', accountId);
+    if (guildId) query.set('guildId', guildId);
+    const data = await get(`${API.uploadTargets}${query.toString() ? `?${query}` : ''}`);
+    S.uploadTargets = {
+      accounts: data.accounts || [],
+      dms: data.dms || [],
+      guilds: data.guilds || [],
+      channels: data.channels || [],
+    };
+
+    syncAccountSelects(S.uploadTargets.accounts);
+    const savedDm = $('uploadDmChannelId')?.dataset.saved || '';
+    const savedGuild = $('uploadGuildId')?.dataset.saved || '';
+    const currentGuild = $('uploadGuildId')?.value || '';
+    const savedChannel = $('uploadChannelId')?.value || '';
+    fillSelect('uploadDmChannelId', S.uploadTargets.dms, savedDm, d => d.name || d.id, 'No DMs found', d => (d.recipients || []).map(r => r.tag || r.username || r.id).filter(Boolean).join(', ') || d.id);
+    fillSelect('uploadGuildId', S.uploadTargets.guilds, currentGuild || savedGuild || S.uploadTargets.guilds[0]?.id, g => g.name || g.id, 'No servers found', g => g.id);
+    fillSelect('uploadChannelId', S.uploadTargets.channels, savedChannel, c => `#${c.name || c.id}`, 'Choose a server first', c => c.id);
+
+    if (data.error) setUploadTargetStatus(data.error, 'error');
+    else if (data.dmError || data.guildError || data.channelError) setUploadTargetStatus(data.dmError || data.guildError || data.channelError, 'warn');
+    else if (!silent) setUploadTargetStatus('Destinations loaded', 'info');
+    renderUploadTargetMode();
+  } catch (e) {
+    setUploadTargetStatus(e.message || 'Could not load upload destinations', 'error');
+  } finally {
+    if (btn && !silent) setBusyButton(btn, false);
+  }
+}
+
+async function validateUploadTarget(options = {}) {
+  const silent = options.silent === true;
+  const btn = $('validateUploadTargetBtn');
+  if (btn && !silent) setBusyButton(btn, true, 'Checking...');
+  try {
+    const r = await post(API.uploadTargetValidate, { target: currentUploadTarget() });
+    if (r.ok) {
+      setUploadTargetStatus(`Ready: ${r.destination}`, 'info');
+      if (!silent) toast('Upload target is ready', 'success');
+      return true;
+    }
+    setUploadTargetStatus(r.error || 'Upload target failed check', 'error');
+    if (!silent) toast(r.error || 'Upload target failed check', 'error');
+    return false;
+  } catch (e) {
+    setUploadTargetStatus(e.message || 'Upload target check failed', 'error');
+    return false;
+  } finally {
+    if (btn && !silent) setBusyButton(btn, false);
+  }
+}
+
+async function saveUploadTarget() {
+  const ok = await validateUploadTarget({ silent: true });
+  if (!ok) {
+    toast('Fix the upload target before saving', 'error');
+    return;
+  }
+  const r = await post(API.env, collectEnvSettings());
+  if (r.ok) toast('Upload target saved!', 'success');
   else toast('Save failed', 'error');
 }
 
@@ -2108,11 +2400,35 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   $('startBtn')?.addEventListener('click', async () => {
     const btn = $('startBtn');
-    if (btn) { btn.disabled = true; btn.textContent = 'Preparing…'; }
+    if (_uploadsBusy > 0) {
+      toast('Wait for image uploads to finish first', 'warn');
+      return;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
     try {
+      const saved = await savePresence({ silent: true });
+      if (!saved) return;
+
+      if (btn) btn.textContent = 'Starting…';
       const r = await post(API.start, {});
       if (r.ok || r.status) {
         const ic = r.imageCheck;
+        if (Array.isArray(ic?.replacements) && ic.replacements.length) {
+          let applied = 0;
+          for (const item of ic.replacements) {
+            const rows = S.fields[item.key] || [];
+            const idx = rows[item.index] === item.oldUrl ? item.index : rows.indexOf(item.oldUrl);
+            if (idx >= 0) {
+              rows[idx] = item.newUrl;
+              applied++;
+            }
+          }
+          if (applied) {
+            S.settings.config.config.bigimg = S.fields.bigimg || [];
+            S.settings.config.config.smallimg = S.fields.smallimg || [];
+            renderStreamEditors();
+          }
+        }
         if (ic && ic.checked > 0) {
           if (ic.refreshed > 0 && ic.failed === 0) {
             toast(`Bot starting — ${ic.refreshed} image URL(s) refreshed ✓`, 'success');
@@ -2231,7 +2547,50 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  document.addEventListener('input', e => {
+    const smartSearch = e.target.dataset?.smartSearch;
+    if (!smartSearch) return;
+    const q = e.target.value || '';
+    renderSmartSelect(smartSearch, q);
+    const root = smartRoot(smartSearch);
+    root?.classList.add('open');
+    setTimeout(() => {
+      const next = document.querySelector(`[data-smart-search="${smartSearch}"]`);
+      next?.focus();
+      next?.setSelectionRange(q.length, q.length);
+    }, 0);
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeSmartSelects();
+  });
+
   document.addEventListener('click', e => {
+    const smartToggle = e.target.closest('[data-smart-toggle]');
+    if (smartToggle) {
+      const id = smartToggle.dataset.smartToggle;
+      const root = smartRoot(id);
+      const willOpen = !root?.classList.contains('open');
+      closeSmartSelects(id);
+      if (willOpen && root) {
+        renderSmartSelect(id);
+        root.classList.add('open');
+        setTimeout(() => document.querySelector(`[data-smart-search="${id}"]`)?.focus(), 0);
+      } else {
+        root?.classList.remove('open');
+      }
+      return;
+    }
+
+    const smartOption = e.target.closest('[data-smart-option]');
+    if (smartOption) {
+      setSmartValue(smartOption.dataset.smartOption, smartOption.dataset.value || '');
+      closeSmartSelects();
+      return;
+    }
+
+    if (!e.target.closest('.smart-select')) closeSmartSelects();
+
     const removeLine = e.target.closest('[data-remove-line]');
     if (removeLine) {
       const key = removeLine.dataset.removeLine;
@@ -2333,6 +2692,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   $('testWebhookBtn')?.addEventListener('click', testWebhook);
   $('saveWebhookBtn')?.addEventListener('click', saveWebhook);
+  $('loadUploadTargetsBtn')?.addEventListener('click', () => loadUploadTargets());
+  $('validateUploadTargetBtn')?.addEventListener('click', () => validateUploadTarget());
+  $('saveUploadTargetBtn')?.addEventListener('click', saveUploadTarget);
+  $('uploadTargetType')?.addEventListener('change', () => { renderUploadTargetMode(); setUploadTargetStatus('', 'info'); });
+  $('uploadAccountId')?.addEventListener('change', () => {
+    if ($('appAccountId') && !$('appAccountId').value) $('appAccountId').value = $('uploadAccountId').value;
+    loadUploadTargets({ silent: true });
+  });
+  $('uploadGuildId')?.addEventListener('change', () => loadUploadTargets({ silent: true }));
   $('exportBtn')?.addEventListener('click', exportConfig);
   $('importFile')?.addEventListener('change', e => importConfig(e.target.files[0]));
 
@@ -2354,6 +2722,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   await Promise.all([loadSettings(), loadEnv()]);
+  await loadUploadTargets({ silent: true });
   connectWS();
 
   // Load initial rate-limit state
@@ -2373,9 +2742,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setBusyButton(btn, true, 'Scanning…');
     result.style.display = 'none';
     try {
-      const r = await post('/api/uploads/cleanup', {});
-      if (!r.ok) { toast('Cleanup failed', 'error'); return; }
-      const d = await r.json();
+      const d = await post('/api/uploads/cleanup', {});
       if (d.error) { toast(d.error, 'error'); return; }
       const freed = d.freed >= 1024 * 1024
         ? `${(d.freed / 1024 / 1024).toFixed(1)} MB`

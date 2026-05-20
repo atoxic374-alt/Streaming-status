@@ -318,6 +318,31 @@ select.input-field{cursor:pointer}
 .field-label{display:block;font-size:12px;color:var(--text-dim);font-weight:500;margin:10px 0 2px}
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 
+/* ── Searchable picker ── */
+.smart-select{position:relative;width:100%;margin:4px 0}
+.smart-select-btn{width:100%;min-height:38px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);display:grid;grid-template-columns:minmax(0,1fr) 18px;align-items:center;gap:8px;padding:8px 10px 8px 12px;font-family:inherit;font-size:13px;text-align:left;cursor:pointer;transition:all var(--ease)}
+.smart-select-btn:hover,.smart-select.open .smart-select-btn{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-dim)}
+.smart-select-value{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.smart-select-value.muted{color:var(--text-muted)}
+.smart-select-caret{width:8px;height:8px;border-right:2px solid var(--text-muted);border-bottom:2px solid var(--text-muted);transform:rotate(45deg);justify-self:center;margin-top:-3px;transition:transform .15s}
+.smart-select.open .smart-select-caret{transform:rotate(225deg);margin-top:3px}
+.smart-select-menu{position:absolute;z-index:950;left:0;right:0;top:calc(100% + 6px);background:var(--bg-panel);border:1px solid var(--border-light);border-radius:var(--radius);box-shadow:0 16px 44px rgba(0,0,0,.55);padding:8px;display:none}
+.smart-select.open .smart-select-menu{display:block;animation:popIn .14s cubic-bezier(.4,0,.2,1) both}
+.smart-select-search{width:100%;height:34px;margin:0 0 7px;background:var(--bg-input);border:1px solid var(--border);border-radius:7px;color:var(--text);padding:7px 9px;font-size:12px;font-family:inherit}
+.smart-select-search:focus{outline:none;border-color:var(--primary)}
+.smart-select-list{display:flex;flex-direction:column;gap:4px;max-height:230px;overflow-y:auto;padding-right:2px}
+.smart-select-list::-webkit-scrollbar{width:4px}
+.smart-select-list::-webkit-scrollbar-track{background:transparent}
+.smart-select-list::-webkit-scrollbar-thumb{background:var(--border-light);border-radius:4px}
+.smart-option{display:flex;align-items:center;gap:9px;width:100%;border:1px solid transparent;background:transparent;color:var(--text-dim);border-radius:7px;padding:8px 9px;font-family:inherit;text-align:left;cursor:pointer;transition:all var(--ease);min-width:0}
+.smart-option:hover{background:var(--bg-hover);border-color:var(--border)}
+.smart-option.selected{background:var(--primary-dim);border-color:var(--primary);color:var(--text)}
+.smart-option-main{min-width:0;flex:1}
+.smart-option-label{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.smart-option-sub{font-size:10.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.smart-option-check{font-size:11px;color:var(--primary);font-weight:800;flex-shrink:0}
+.smart-empty{font-size:11px;color:var(--text-muted);border:1px dashed var(--border);border-radius:7px;padding:9px 10px;background:rgba(0,0,0,.10)}
+
 /* ── Field highlight animation ── */
 @keyframes fieldPulse{0%{box-shadow:0 0 0 0 var(--primary-glow)}60%{box-shadow:0 0 0 6px rgba(122,80,96,0)}100%{box-shadow:0 0 0 0 rgba(122,80,96,0)}}
 .field-highlight{animation:fieldPulse .9s ease both;border-color:var(--primary) !important}
@@ -690,6 +715,13 @@ code{font-family:monospace;font-size:11px;background:var(--bg-input);padding:1px
 @keyframes spin{to{transform:rotate(360deg)}}
 #startBtn.upload-busy{opacity:.45;cursor:not-allowed;pointer-events:none}
 #startBtn:disabled{opacity:.45;cursor:not-allowed}
+
+.image-queue-progress{margin:8px 0 12px;border:1px solid rgba(251,191,36,.22);background:rgba(251,191,36,.055);border-radius:8px;padding:10px 12px}
+.iqp-head{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;font-weight:700;color:var(--text);margin-bottom:7px}
+#imageQueuePercent{font-variant-numeric:tabular-nums;color:var(--warning)}
+.iqp-track{height:6px;background:rgba(255,255,255,.07);border-radius:999px;overflow:hidden}
+.iqp-bar{height:100%;width:0;background:linear-gradient(90deg,var(--warning),var(--primary));border-radius:inherit;transition:width .25s ease}
+.iqp-stage{font-size:11px;color:var(--text-muted);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* ── Image Upload Status Panel ── */
 .upload-status{margin-top:10px;border-radius:8px;border:1px solid var(--border-light);padding:10px 12px;background:var(--bg-card);animation:fadeIn .2s ease}

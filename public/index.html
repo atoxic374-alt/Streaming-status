@@ -312,13 +312,15 @@
         </div>
 
         <div class="panel appid-panel" style="margin:0">
-          <div class="panel-header">
-            <h4>Application ID</h4>
-            <button class="btn btn-outline" id="detectAppBtn" style="font-size:11px;padding:4px 10px">Detect</button>
-          </div>
-          <input class="input-field" id="botId" placeholder="Auto-detected on start" style="font-family:monospace;font-size:12px;margin:0"/>
-          <div id="appsList" style="display:none;margin-top:8px"><div id="appsGrid" class="apps-grid"></div></div>
-          <div id="appsStatus" style="display:none;margin-top:6px;font-size:11px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)"></div>
+        <div class="panel-header">
+          <h4>Application ID</h4>
+          <button class="btn btn-outline" id="detectAppBtn" style="font-size:11px;padding:4px 10px">Detect</button>
+        </div>
+        <input type="hidden" id="appAccountId"/>
+        <div class="smart-select" data-smart-for="appAccountId" data-placeholder="Application account"></div>
+        <input class="input-field" id="botId" placeholder="Auto-detected on start" style="font-family:monospace;font-size:12px;margin:0"/>
+        <div id="appsList" style="display:none;margin-top:8px"><div id="appsGrid" class="apps-grid"></div></div>
+        <div id="appsStatus" style="display:none;margin-top:6px;font-size:11px;padding:6px 8px;border-radius:6px;border:1px solid var(--border)"></div>
         </div>
 
         <div class="panel" style="margin:0">
@@ -352,6 +354,14 @@
           </div>
           <input id="largeImageUpload" type="file" accept="image/*" multiple hidden/>
           <input id="smallImageUpload" type="file" accept="image/*" multiple hidden/>
+          <div id="imageQueueProgress" class="image-queue-progress" style="display:none">
+            <div class="iqp-head">
+              <span id="imageQueueTitle">Preparing image</span>
+              <span id="imageQueuePercent">0%</span>
+            </div>
+            <div class="iqp-track"><div id="imageQueueBar" class="iqp-bar"></div></div>
+            <div id="imageQueueStage" class="iqp-stage">Waiting…</div>
+          </div>
           <div class="setting-group">
             <div class="group-title">Large Image <button class="text-btn" id="addLargeImageBtn">+ Image</button></div>
             <div id="largeImagesRows" class="config-list"></div>
@@ -736,6 +746,43 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M9 6V4h6v2"/></svg>
           Clean Up Images
         </button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div style="display:flex;align-items:center;gap:8px">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <h3>Image CDN Upload</h3>
+        </div>
+      </div>
+      <p class="muted-text small">Use a private upload destination when Discord blocks Saved Messages.</p>
+      <label class="field-label">Upload Account</label>
+      <input type="hidden" id="uploadAccountId"/>
+      <div class="smart-select" data-smart-for="uploadAccountId" data-placeholder="Upload account"></div>
+      <label class="field-label" style="margin-top:10px">Destination Type</label>
+      <select class="input-field" id="uploadTargetType">
+        <option value="dm">DM</option>
+        <option value="server">Server Channel</option>
+      </select>
+      <div id="uploadDmFields">
+        <label class="field-label" style="margin-top:10px">DM</label>
+        <input type="hidden" id="uploadDmChannelId"/>
+        <div class="smart-select" data-smart-for="uploadDmChannelId" data-placeholder="Choose DM"></div>
+      </div>
+      <div id="uploadServerFields" style="display:none">
+        <label class="field-label" style="margin-top:10px">Server</label>
+        <input type="hidden" id="uploadGuildId"/>
+        <div class="smart-select" data-smart-for="uploadGuildId" data-placeholder="Choose server"></div>
+        <label class="field-label" style="margin-top:10px">Room</label>
+        <input type="hidden" id="uploadChannelId"/>
+        <div class="smart-select" data-smart-for="uploadChannelId" data-placeholder="Choose room"></div>
+      </div>
+      <div id="uploadTargetStatus" style="display:none;margin-top:8px;font-size:11px;padding:7px 9px;border-radius:6px;border:1px solid var(--border)"></div>
+      <div class="row-actions">
+        <button class="btn btn-outline" id="loadUploadTargetsBtn">Load Destinations</button>
+        <button class="btn btn-outline" id="validateUploadTargetBtn">Check</button>
+        <button class="btn btn-primary" id="saveUploadTargetBtn">Save Upload Target</button>
       </div>
     </div>
 

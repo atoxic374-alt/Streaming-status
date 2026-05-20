@@ -1,0 +1,25 @@
+modules = ["nodejs-20", "web"]
+[agent]
+expertMode = true
+
+[nix]
+channel = "stable-25_05"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 5001
+externalPort = 3000
+
+[workflows]
+
+[[workflows.workflow]]
+name = "Aa"
+mode = "sequential"
+author = 59544719
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "node web/server.js"

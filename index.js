@@ -88,20 +88,46 @@ class GetImage {
         } catch { return false; }
     }
 
+    isManagedUploadUrl(url) {
+        const fileName = this.uploadFileNameFromUrl(url);
+        if (!fileName) return false;
+        if (this.isLocalUrl(url)) return true;
+        return fs.existsSync(path.join(__dirname, "public", "uploads", fileName));
+    }
+
+    uploadFileNameFromUrl(url) {
+        const safeDecode = (value) => {
+            try { return decodeURIComponent(value); }
+            catch { return value; }
+        };
+        try {
+            const pathname = new URL(url).pathname;
+            const raw = pathname.split('/uploads/').pop() || '';
+            const fileName = path.basename(safeDecode(raw));
+            return fileName && fileName !== 'manifest.json' ? fileName : null;
+        } catch {
+            const raw = String(url || '').split('/uploads/').pop()?.split(/[?#]/)[0] || '';
+            const fileName = path.basename(safeDecode(raw));
+            return fileName && fileName !== 'manifest.json' ? fileName : null;
+        }
+    }
+
     // Ask the dashboard server to resolve a URL:
-    // - local URLs → get CDN URL from manifest
+    // - dashboard upload URLs → get/refresh Discord CDN URL
     // - expired CDN URLs → re-upload and return fresh URL
     // - valid URLs → returned unchanged
     async resolveImageUrl(url) {
         if (!url) return null;
-        const needsResolve = this.isLocalUrl(url) || this.isExpiredCdnUrl(url);
+        const managedUpload = this.isManagedUploadUrl(url);
+        const localUrl = this.isLocalUrl(url);
+        const needsResolve = managedUpload || localUrl || this.isExpiredCdnUrl(url);
         if (!needsResolve) return url;
 
-        const reason = this.isLocalUrl(url) ? 'local URL (unreachable by Discord)' : 'expired CDN URL';
+        const reason = managedUpload ? 'dashboard upload URL' : localUrl ? 'local URL (unreachable by Discord)' : 'expired CDN URL';
         console.log(`[Image] Resolving ${reason}: ${url.slice(0, 60)}…`.yellow);
 
         try {
-            const port = process.env.PORT || 5000;
+            const port = process.env.DASHBOARD_PORT || process.env.PORT || 5000;
             const r = await fetch(
                 `http://localhost:${port}/api/uploads/resolve?url=${encodeURIComponent(url)}`,
                 { signal: AbortSignal.timeout(25000) }
@@ -113,10 +139,11 @@ class GetImage {
             const data = await r.json();
             if (data.warning) console.log(`[Image] Warning: ${data.warning}`.yellow);
             if (data.refreshed) console.log(`[Image] URL refreshed from local backup`.cyan);
+            if ((managedUpload || localUrl) && data.url === url && data.warning) return null;
             return data.url || url;
         } catch (e) {
             console.log(`[Image] Resolve error: ${e.message}`.red);
-            return url;
+            return managedUpload || localUrl ? null : url;
         }
     }
 
@@ -154,7 +181,7 @@ class GetImage {
                 }
             }
 
-            const resolve = (item) => item?.url?.includes("attachments") ? item.url : item?.external_asset_path;
+            const resolve = (item) => item?.external_asset_path || item?.url;
             for (const image of images) {
                 if (image.url === url1) url1 = resolve(image);
                 if (image.url === url2) url2 = resolve(image);
