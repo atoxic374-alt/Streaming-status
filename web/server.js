@@ -1807,6 +1807,124 @@ setInterval(() => {
   });
 }, 5000);
 
+// ── CDN URL Health-Check Scheduler ────────────────────────────────
+// Runs every 25 minutes. Finds images expiring within 2 hours and
+// re-uploads them proactively before Discord breaks the presence.
+let _cdnRefreshRunning = false;
+
+async function runCdnHealthCheck() {
+  if (_cdnRefreshRunning) return;
+
+  const tokens = extractTokens();
+  if (!tokens.length) return;
+
+  const manifest = loadManifest();
+  const entries = Object.values(manifest);
+  const now = Date.now();
+  const TWO_HOURS = 2 * 60 * 60 * 1000;
+
+  // Collect unique files expiring within 2 hours (deduplicate by fileName)
+  const seen = new Set();
+  const toRefresh = [];
+  for (const entry of entries) {
+    if (!entry?.fileName || !entry?.cdnUrl || seen.has(entry.fileName)) continue;
+    seen.add(entry.fileName);
+    if (!isExpiredCdnUrl(entry.cdnUrl)) {
+      try {
+        const ex = new URL(entry.cdnUrl).searchParams.get('ex');
+        if (!ex) continue;
+        const expiresAt = parseInt(ex, 16) * 1000;
+        if (expiresAt - now < TWO_HOURS) toRefresh.push(entry);
+      } catch {}
+    } else {
+      toRefresh.push(entry);
+    }
+  }
+
+  if (!toRefresh.length) return;
+
+  _cdnRefreshRunning = true;
+  appendLog(`[CDN] Health-check: refreshing ${toRefresh.length} image(s) expiring soon…`);
+
+  let ok = 0, fail = 0;
+  for (const entry of toRefresh) {
+    try {
+      const fresh = await refreshCdnUrl(entry.fileName);
+      if (fresh) {
+        ok++;
+        appendLog(`[CDN] ✓ Refreshed: ${entry.fileName}`);
+      } else {
+        fail++;
+        appendLog(`[CDN] ✗ Failed to refresh: ${entry.fileName}`, true);
+      }
+      // Natural pace between refreshes
+      if (toRefresh.indexOf(entry) < toRefresh.length - 1) {
+        await humanDelay(1500, 3000);
+      }
+    } catch (e) {
+      fail++;
+      appendLog(`[CDN] ✗ Error refreshing ${entry.fileName}: ${e.message}`, true);
+    }
+  }
+
+  _cdnRefreshRunning = false;
+  const summary = `[CDN] Health-check done — ${ok} refreshed, ${fail} failed`;
+  appendLog(summary, fail > 0 && ok === 0);
+  if (wsClients.size) broadcast('cdnHealth', { ok, fail, total: toRefresh.length, ts: Date.now() });
+}
+
+// Start first check 2 minutes after boot (let session settle), then every 25 min
+setTimeout(() => {
+  runCdnHealthCheck();
+  setInterval(runCdnHealthCheck, 25 * 60 * 1000);
+}, 2 * 60 * 1000);
+
+// ── API: manual CDN health-check trigger ──────────────────────────
+app.post('/api/cdn-health-check', async (req, res) => {
+  if (_cdnRefreshRunning) return res.json({ ok: false, message: 'Health-check already running' });
+  res.json({ ok: true, message: 'CDN health-check started' });
+  runCdnHealthCheck();
+});
+
+app.get('/api/cdn-health-check/status', (req, res) => {
+  const manifest = loadManifest();
+  const entries = Object.values(manifest);
+  const now = Date.now();
+  const TWO_HOURS = 2 * 60 * 60 * 1000;
+
+  let total = 0, expiredCount = 0, soonCount = 0, healthyCount = 0;
+  const seen = new Set();
+
+  for (const entry of entries) {
+    if (!entry?.fileName || !entry?.cdnUrl || seen.has(entry.fileName)) continue;
+    seen.add(entry.fileName);
+    total++;
+
+    if (isExpiredCdnUrl(entry.cdnUrl)) {
+      expiredCount++;
+    } else {
+      try {
+        const ex = new URL(entry.cdnUrl).searchParams.get('ex');
+        if (ex) {
+          const expiresAt = parseInt(ex, 16) * 1000;
+          if (expiresAt - now < TWO_HOURS) soonCount++;
+          else healthyCount++;
+        } else {
+          healthyCount++;
+        }
+      } catch { healthyCount++; }
+    }
+  }
+
+  res.json({
+    running: _cdnRefreshRunning,
+    total,
+    healthy: healthyCount,
+    expiringSoon: soonCount,
+    expired: expiredCount,
+  });
+});
+
 // ── Init & Listen ──────────────────────────────────────────────────
 ensureFile(PATHS.profiles, []);
 ensureFile(PATHS.stats, {
