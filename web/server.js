@@ -18,10 +18,17 @@ const BASE_PORT = process.env.PORT || 5000;
 let dashboardPort = Number(BASE_PORT) || 5000;
 const ROOT = path.join(__dirname, '..');
 
-// Bind to 0.0.0.0 on Replit or any remote host (REMOTE=1), else localhost only
-const IS_REMOTE  = !!(process.env.REPLIT_DEV_DOMAIN || process.env.REMOTE);
-const BIND_HOST  = IS_REMOTE ? '0.0.0.0' : '127.0.0.1';
-if (IS_REMOTE) process.env.NO_AUTO_OPEN = '1'; // no browser on remote servers
+// Bind to all interfaces on remote hosts and prevent automatic browser opening.
+// On platforms like Railway or other containerised hosts, binding to 127.0.0.1
+// will make the dashboard inaccessible externally, and attempting to open a
+// browser via xdg-open/cmd can cause a crash.  Therefore we always treat the
+// environment as remote: bind to 0.0.0.0 and disable auto-opening of a browser.
+const IS_REMOTE  = true;
+const BIND_HOST  = '0.0.0.0';
+// Always disable automatic browser opening.  Setting this flag prevents
+// openBrowser(url) from being invoked at start-up.  Without this the
+// application may crash on hosts that lack GUI utilities like xdg-open.
+process.env.NO_AUTO_OPEN = '1';
 
 function openBrowser(url) {
   const platform = process.platform;
@@ -2145,6 +2152,10 @@ findAvailablePort(Number(BASE_PORT)).then((PORT) => {
     if (Number(BASE_PORT) !== PORT) {
       console.log(`[Info] Port ${BASE_PORT} was busy, switched to port ${PORT}`);
     }
-    if (!process.env.NO_AUTO_OPEN) openBrowser(url);
+    // The dashboard should not attempt to auto-open a browser when running on
+    // server hosts.  The NO_AUTO_OPEN flag is always set at the top of this
+    // file.  Removing this invocation prevents crashes caused by missing
+    // desktop utilities such as xdg-open on containerised environments.
+    // if (!process.env.NO_AUTO_OPEN) openBrowser(url);
   });
 });
