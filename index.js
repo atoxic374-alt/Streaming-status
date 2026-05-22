@@ -254,81 +254,174 @@ class GetImage {
         }
     }
 
+    // ── Deep preflight: verify a URL is actually reachable before calling getExternal.
+    // Uses a real HTTP GET (not HEAD — some CDNs return 405 for HEAD) with a short
+    // timeout, mimicking a browser image load. Returns { ok, status, reason }.
+    async _preflightUrl(url) {
+        if (!url) return { ok: false, reason: 'empty URL' };
+        // Skip preflight for mp: paths (already Discord-internal)
+        if (url.startsWith('mp:')) return { ok: true, reason: 'internal mp: path' };
+        try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 7000);
+            const r = await fetch(url, {
+                method: 'GET',
+                signal: ctrl.signal,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
+                },
+            });
+            clearTimeout(timer);
+            // 200–299 = ok, 302/301 = redirect (ok), 404/403 = broken
+            const ok = r.status < 400;
+            if (!ok) console.log(`[Image] Preflight ${r.status} — ${url.slice(0, 70)}`.yellow);
+            return { ok, status: r.status, reason: ok ? 'reachable' : `HTTP ${r.status}` };
+        } catch (e) {
+            // Timeout, CORS abort, DNS failure — treat as likely inaccessible
+            const reason = e.name === 'AbortError' ? 'timeout' : e.message;
+            console.log(`[Image] Preflight error (${reason}) — ${url.slice(0, 70)}`.yellow);
+            // On network errors we allow the attempt anyway (server-side restrictions differ from bot)
+            return { ok: true, reason: `network error (${reason}) — allowing anyway` };
+        }
+    }
+
+    // ── Run one strategy: preflight → getExternal → verify mp: paths obtained
+    // Returns { bigImage, smallImage } if the strategy succeeds, null otherwise.
+    async _runStrategy(label, rawUrls, url1, url2, applicationId) {
+        const urls = rawUrls.filter(Boolean);
+        if (!urls.length) return null;
+
+        // ── Preflight: verify each URL is actually accessible ──────────────
+        const checks = await Promise.all(urls.map(u => this._preflightUrl(u)));
+        const alive  = urls.filter((_, i) => checks[i].ok);
+        const dead   = urls.filter((_, i) => !checks[i].ok);
+
+        if (dead.length) console.log(`[Image] ${label} preflight: ${dead.length} URL(s) not reachable — skipping them`.yellow);
+        if (!alive.length) {
+            console.log(`[Image] ${label}: all URLs failed preflight — skipping strategy`.yellow);
+            return null;
+        }
+
+        // Adjust url1/url2 slots to only use alive URLs
+        const alive1 = alive.includes(url1) ? url1 : null;
+        const alive2 = alive.includes(url2) ? url2 : null;
+
+        // ── getExternal call with retry ────────────────────────────────────
+        try {
+            const images = await this._tryGetExternal(alive, applicationId);
+            if (!images.length) {
+                console.log(`[Image] ${label}: getExternal returned empty`.yellow);
+                return null;
+            }
+            const result = this._buildImageResult(images, alive1 || url1, alive2 || url2);
+
+            // ── Verify we got actual mp: paths (not just raw URLs) ─────────
+            const hasMp = (result.bigImage?.startsWith('mp:') || !url1) &&
+                          (result.smallImage?.startsWith('mp:') || !url2);
+            if (hasMp) {
+                console.log(`[Image] ${label} ✓ — mp:external paths confirmed`.green);
+                return result;
+            }
+            console.log(`[Image] ${label}: accepted but no mp: path returned — continuing to next strategy`.yellow);
+            return null;
+        } catch (e) {
+            console.log(`[Image] ${label} rejected by Discord: ${e.message}`.yellow);
+            return null;
+        }
+    }
+
     async get(url1, url2, applicationId) {
         try {
             url1 = this.isValidURL(url1) ? url1 : null;
             url2 = this.isValidURL(url2) ? url2 : null;
             if (!url1 && !url2) throw new Error("No Image");
 
-            console.log(`[Image] Resolving image URLs…`.grey);
+            console.log(`[Image] ── Starting image resolution ──`.grey);
 
-            // Step 1: Resolve local / managed-upload / expired CDN URLs
+            // Resolve local / managed-upload / expired CDN URLs via dashboard server
             [url1, url2] = await Promise.all([
                 this.resolveImageUrl(url1),
                 this.resolveImageUrl(url2),
             ]);
             if (!url1 && !url2) throw new Error("No Image after resolution");
 
-            // Step 2: Convert any remaining signed CDN URLs to stable media URLs
-            if (url1) url1 = this.convertCdnToMediaUrl(url1);
-            if (url2) url2 = this.convertCdnToMediaUrl(url2);
+            // ══════════════════════════════════════════════════════════════
+            // Strategy 0 — Direct URL (exactly as stored, before CDN conversion)
+            // Try the URL the user configured without any transformation.
+            // Preflight verifies it's actually reachable before calling Discord.
+            // ══════════════════════════════════════════════════════════════
+            console.log(`[Image] Strategy 0 — direct URL (as stored)…`.grey);
+            const s0 = await this._runStrategy('S0:direct', [url1, url2], url1, url2, applicationId);
+            if (s0) return s0;
 
             // ══════════════════════════════════════════════════════════════
-            // Strategy 1 — media.discordapp.net (stable, no expiry)
-            // This is the primary format. Discord's external-assets API is
-            // expected to accept media.discordapp.net attachment URLs cleanly.
+            // Strategy 1 — Convert to media.discordapp.net (stable, no expiry)
+            // Signed cdn.discordapp.com attachment URLs → media.discordapp.net
+            // (only changes URL if it was a signed CDN URL; no-op otherwise)
             // ══════════════════════════════════════════════════════════════
-            const s1urls = [url1, url2].filter(Boolean);
-            console.log(`[Image] Strategy 1 — media.discordapp.net (${s1urls.length} image(s))`.grey);
-            try {
-                const images = await this._tryGetExternal(s1urls, applicationId);
-                if (images.length) {
-                    console.log(`[Image] Strategy 1 accepted by Discord ✓`.green);
-                    return this._buildImageResult(images, url1, url2);
-                }
-            } catch (e1) {
-                console.log(`[Image] Strategy 1 rejected: ${e1.message}`.yellow);
+            const m1 = this.convertCdnToMediaUrl(url1);
+            const m2 = this.convertCdnToMediaUrl(url2);
+            if (m1 !== url1 || m2 !== url2) {
+                // Only run S1 if the URLs actually changed (avoid duplicate attempt)
+                console.log(`[Image] Strategy 1 — media.discordapp.net (converted)…`.grey);
+                const s1 = await this._runStrategy('S1:media', [m1, m2], m1, m2, applicationId);
+                if (s1) return s1;
+            } else {
+                console.log(`[Image] Strategy 1 — skipped (same URL as S0)`.grey);
             }
 
             // ══════════════════════════════════════════════════════════════
-            // Strategy 2 — Force re-upload → fresh CDN → new media URL
-            // Used when Discord rejects the cached media URL (e.g. attachment
-            // deleted from the channel, or rate-limited). Re-uploading the
-            // local file produces a new attachment ID with a clean URL.
-            // Only applies to images that have a local backup (managed uploads).
+            // Strategy 2 — Force re-upload → fresh CDN URL → new media URL
+            // Bypasses any cached/stale URL by uploading the local file again.
+            // Only applies to images with a local backup (managed uploads).
             // ══════════════════════════════════════════════════════════════
             const isMgd1 = url1 && this.isManagedUploadUrl(url1);
             const isMgd2 = url2 && this.isManagedUploadUrl(url2);
             if (isMgd1 || isMgd2) {
-                console.log(`[Image] Strategy 2 — force re-upload via dashboard…`.yellow);
+                console.log(`[Image] Strategy 2 — force re-upload…`.yellow);
                 const [fresh1, fresh2] = await Promise.all([
                     isMgd1 ? this.forceResolveUrl(url1) : Promise.resolve(url1),
                     isMgd2 ? this.forceResolveUrl(url2) : Promise.resolve(url2),
                 ]);
-                const s2urls = [fresh1, fresh2].filter(Boolean);
-                if (s2urls.length) {
-                    try {
-                        const images2 = await this._tryGetExternal(s2urls, applicationId);
-                        if (images2.length) {
-                            console.log(`[Image] Strategy 2 accepted by Discord ✓ (re-uploaded)`.green);
-                            return this._buildImageResult(images2, fresh1, fresh2);
-                        }
-                    } catch (e2) {
-                        console.log(`[Image] Strategy 2 rejected: ${e2.message}`.yellow);
-                    }
-                }
+                const s2 = await this._runStrategy('S2:reupload', [fresh1, fresh2], fresh1, fresh2, applicationId);
+                if (s2) return s2;
             }
 
             // ══════════════════════════════════════════════════════════════
-            // All strategies exhausted — explicit failure (not silent)
+            // Strategy 3 — Pass URL directly to Discord (no getExternal)
+            // Discord's selfbot library accepts raw https:// URLs in setAssetsLargeImage
+            // and handles the external-assets conversion internally on some versions.
+            // Last resort before giving up completely.
             // ══════════════════════════════════════════════════════════════
-            console.log(`[Image] ✗ Discord rejected all image URL formats — images will be hidden in Rich Presence`.red);
-            console.log(`[Image]   URLs attempted: ${[url1, url2].filter(Boolean).join(' | ')}`.red);
-            console.log(`[Image]   Fix: press "Check CDN" in the dashboard to re-upload images`.yellow);
+            const directUrl1 = m1 || url1;
+            const directUrl2 = m2 || url2;
+            const directChecks = await Promise.all([
+                directUrl1 ? this._preflightUrl(directUrl1) : Promise.resolve({ ok: false }),
+                directUrl2 ? this._preflightUrl(directUrl2) : Promise.resolve({ ok: false }),
+            ]);
+            const hasDirect = directChecks.some(c => c.ok);
+            if (hasDirect) {
+                const d1 = (directUrl1 && directChecks[0].ok) ? directUrl1 : null;
+                const d2 = (directUrl2 && directChecks[1].ok) ? directUrl2 : null;
+                console.log(`[Image] Strategy 3 — direct URL bypass (no getExternal)…`.yellow);
+                console.log(`[Image] S3: passing URL directly — Discord library will handle it`.grey);
+                return { bigImage: d1, smallImage: d2 };
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // All strategies exhausted — explicit failure, never silent
+            // ══════════════════════════════════════════════════════════════
+            console.log(`[Image] ✗ All strategies failed — images will be hidden`.red);
+            console.log(`[Image]   Tried: ${[url1, url2].filter(Boolean).join(' | ')}`.red);
+            console.log(`[Image]   → Go to Streaming → Check CDN to fix image URLs`.yellow);
             return { bigImage: null, smallImage: null };
 
         } catch (e) {
-            console.log(`[Image] Failed to load images: ${e.message}`.red);
+            console.log(`[Image] Error during image resolution: ${e.message}`.red);
             return { bigImage: null, smallImage: null };
         }
     }
