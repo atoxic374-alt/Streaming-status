@@ -200,13 +200,41 @@ class GetImage {
     }
 
     // ── Map getExternal image list back to url1 / url2 slots
+    // Discord's API returns items in the same ORDER as the input URLs.
+    // We use URL matching first; if it fails (Discord normalized the URL),
+    // we fall back to positional matching so mp:external/... is always used.
     _buildImageResult(images, url1, url2) {
-        const resolve = (item) => item?.external_asset_path || item?.url;
-        for (const image of images) {
-            if (url1 && image.url === url1) url1 = resolve(image);
-            if (url2 && image.url === url2) url2 = resolve(image);
+        const resolve = (item) => item?.external_asset_path || item?.url || null;
+        const inputs = [url1, url2].filter(Boolean);
+
+        // Build lookup: exact URL → resolved value
+        const byUrl = new Map();
+        images.forEach((img, i) => {
+            if (!img) return;
+            const val = resolve(img);
+            if (!val) return;
+            // URL-based entry
+            if (img.url) byUrl.set(img.url, val);
+            // Positional fallback: map input[i] → val if not already mapped
+            if (inputs[i] && !byUrl.has(inputs[i])) byUrl.set(inputs[i], val);
+        });
+
+        const big   = url1 ? (byUrl.get(url1) || null) : null;
+        const small = url2 ? (byUrl.get(url2) || null) : null;
+
+        // Log what we actually obtained so issues are visible in logs
+        if (url1) {
+            if (big?.startsWith('mp:')) console.log(`[Image] Large → ${big.slice(0, 60)}`.green);
+            else if (big)              console.log(`[Image] Large → raw URL (mp: path missing) ${big.slice(0,60)}`.yellow);
+            else                       console.log(`[Image] Large → no path obtained`.red);
         }
-        return { bigImage: url1 || null, smallImage: url2 || null };
+        if (url2) {
+            if (small?.startsWith('mp:')) console.log(`[Image] Small → ${small.slice(0, 60)}`.green);
+            else if (small)              console.log(`[Image] Small → raw URL (mp: path missing) ${small.slice(0,60)}`.yellow);
+            else                         console.log(`[Image] Small → no path obtained`.red);
+        }
+
+        return { bigImage: big, smallImage: small };
     }
 
     // ── Ask the server to force-re-upload an image and return a fresh media URL
