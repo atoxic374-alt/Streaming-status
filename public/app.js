@@ -1173,22 +1173,31 @@ async function checkImages() {
     const r = await post(API.checkImages, { urls: allEntries.map(x => x.url) });
     const results = r.results || [];
 
-    // Apply refreshed/resolved URLs back into S.fields
+    // Apply updated URLs back into S.fields for ALL statuses where newUrl differs
+    // This includes: refreshed (re-uploaded), ok (CDN→media conversion), external
     let updated = 0;
     for (const item of results) {
-      if (item.status === 'refreshed' && item.newUrl && item.newUrl !== item.url) {
-        for (const e of allEntries.filter(x => x.url === item.url)) {
-          const idx = (S.fields[e.key] || []).indexOf(item.url);
-          if (idx >= 0) { S.fields[e.key][idx] = item.newUrl; updated++; }
-        }
+      const targetUrl = item.newUrl;
+      if (!targetUrl || targetUrl === item.url) continue;
+      // Update any entry that has the old URL
+      for (const e of allEntries.filter(x => x.url === item.url)) {
+        const idx = (S.fields[e.key] || []).indexOf(item.url);
+        if (idx >= 0) { S.fields[e.key][idx] = targetUrl; updated++; }
       }
     }
+
     if (updated > 0) {
       renderStreamEditors();
-      toast(`${updated} image URL(s) updated to fresh CDN links`, 'success');
+      // Auto-save config so the new stable URLs persist immediately
+      try {
+        await savePresence({ silent: true });
+        toast(`${updated} image URL(s) converted to stable format and saved`, 'success');
+      } catch {
+        toast(`${updated} image URL(s) updated — save manually to persist`, 'warn');
+      }
     }
 
-    showImageCheckResult(results);
+    showImageCheckResult(results, updated);
   } catch (e) {
     toast(e.message || 'CDN check failed', 'error');
   } finally {
@@ -1196,53 +1205,108 @@ async function checkImages() {
   }
 }
 
-function showImageCheckResult(results) {
+function _imageUrlBadge(url) {
+  if (!url) return '';
+  if (url.includes('media.discordapp.net/attachments')) return '<span class="img-badge media">media</span>';
+  if (url.includes('cdn.discordapp.com/attachments'))   return '<span class="img-badge cdn">cdn</span>';
+  if (url.includes('cdn.discordapp.com'))               return '<span class="img-badge cdn">discord</span>';
+  return '<span class="img-badge ext">ext</span>';
+}
+
+function showImageCheckResult(results, updatedCount = 0) {
   const panel = $('imageCheckStatus');
   const body  = $('imageCheckSteps');
   const icon  = $('imageCheckStatusIcon');
   const title = $('imageCheckStatusTitle');
   if (!panel || !body) return;
 
-  const ok        = results.filter(r => r.status === 'ok' || r.status === 'external').length;
+  const converted = results.filter(r => (r.status === 'ok' || r.status === 'refreshed') && r.newUrl && r.newUrl !== r.url).length;
   const refreshed = results.filter(r => r.status === 'refreshed').length;
   const failed    = results.filter(r => ['error', 'expired', 'missing'].includes(r.status)).length;
   const allGood   = failed === 0;
 
   icon.textContent = allGood ? '✓' : failed > 0 ? '✗' : '⚠';
   icon.className   = `status-icon ${allGood ? 'ok' : failed > 0 ? 'error' : 'warn'}`;
-  title.textContent = allGood
-    ? `All ${results.length} image(s) are ready on Discord CDN${refreshed ? ` (${refreshed} refreshed)` : ''}`
-    : `${failed} image(s) need re-uploading${refreshed ? ` · ${refreshed} fixed automatically` : ''}`;
+
+  let titleText = '';
+  if (allGood) {
+    titleText = `All ${results.length} image(s) ready`;
+    if (converted > 0) titleText += ` — ${converted} converted to stable format`;
+    if (refreshed > 0) titleText += ` (${refreshed} re-uploaded)`;
+  } else {
+    titleText = `${failed} image(s) need attention`;
+    if (converted > 0) titleText += ` · ${converted} fixed automatically`;
+  }
+  title.textContent = titleText;
 
   body.innerHTML = results.map(item => {
     const dot = { ok: '✓', external: '✓', refreshed: '↻', error: '✗', expired: '✗', missing: '✗' }[item.status] || '·';
-    const cls = ['ok','external'].includes(item.status) ? 'ok'
+    const cls = ['ok', 'external'].includes(item.status) ? 'ok'
               : item.status === 'refreshed' ? 'refreshed' : 'error';
-    const label = (item.newUrl || item.url || '').replace(/^https?:\/\//, '').slice(0, 55);
-    return `<div class="upload-step ${cls}">
-      <span class="step-dot">${dot}</span>
-      <span class="step-name" title="${escAttr(item.url || '')}">${escHtml(label)}</span>
-      <span class="step-detail">${escHtml(item.detail)}</span>
+
+    const displayUrl = item.newUrl || item.url || '';
+    const wasConverted = item.newUrl && item.newUrl !== item.url;
+    const shortUrl = displayUrl.replace(/^https?:\/\//, '').slice(0, 60);
+    const badge = _imageUrlBadge(displayUrl);
+    const thumb = displayUrl
+      ? `<img class="check-thumb" src="${escAttr(displayUrl)}" alt="" onerror="this.style.display='none'">`
+      : '';
+
+    return `<div class="upload-step ${cls}" style="align-items:flex-start;gap:8px">
+      <span class="step-dot" style="margin-top:2px">${dot}</span>
+      ${thumb}
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+          ${badge}
+          <span class="step-name" title="${escAttr(displayUrl)}">${escHtml(shortUrl)}</span>
+        </div>
+        <div class="step-detail">${escHtml(item.detail)}${wasConverted ? ' — URL updated' : ''}</div>
+      </div>
     </div>`;
   }).join('');
 
-  panel.className  = `upload-status ${allGood ? 'ok' : failed > 0 ? 'error' : 'warn'}`;
+  panel.className     = `upload-status ${allGood ? 'ok' : failed > 0 ? 'error' : 'warn'}`;
   panel.style.display = 'block';
-  if (allGood) setTimeout(() => { panel.style.display = 'none'; }, 10000);
+  if (allGood && !converted && !refreshed) setTimeout(() => { panel.style.display = 'none'; }, 8000);
+}
+
+function _imgUrlBadge(url) {
+  if (!url) return '';
+  if (url.includes('media.discordapp.net')) return '<span class="img-badge media" title="Stable media URL — works with Discord Rich Presence">media</span>';
+  if (url.includes('cdn.discordapp.com/attachments')) return '<span class="img-badge cdn warn-badge" title="Signed CDN URL — press Check CDN to convert">cdn</span>';
+  if (url.includes('cdn.discordapp.com')) return '<span class="img-badge cdn">discord</span>';
+  return '<span class="img-badge ext" title="External URL">ext</span>';
 }
 
 function renderImageRows(containerId, key) {
   const el = $(containerId); if (!el) return;
   const rows = S.fields[key] || [];
-  el.innerHTML = rows.length ? rows.map((url, i) => `
-    <div class="asset-row">
-      <div class="asset-thumb">${url ? `<img src="${escAttr(url)}" alt="">` : '<span>IMG</span>'}</div>
+  if (!rows.length) {
+    el.innerHTML = `<div class="mini-empty">No attached images</div>`;
+    return;
+  }
+  el.innerHTML = rows.map((url, i) => {
+    const badge = _imgUrlBadge(url);
+    const isCdnSigned = url && url.includes('cdn.discordapp.com/attachments');
+    const shortUrl = (url || '').replace(/^https?:\/\//, '').replace(/[?#].*$/, '').slice(0, 52);
+    return `
+    <div class="asset-row${isCdnSigned ? ' asset-row-warn' : ''}">
+      <div class="asset-thumb">
+        ${url
+          ? `<img src="${escAttr(url)}" alt="" onerror="this.parentElement.innerHTML='<span>IMG</span>'">`
+          : '<span>IMG</span>'}
+      </div>
       <div class="asset-meta">
-        <div class="asset-title">${key === 'bigimg' ? 'Large image' : 'Small image'} ${i + 1}</div>
-        <div class="asset-url">${escHtml(url)}</div>
+        <div class="asset-title" style="display:flex;align-items:center;gap:6px">
+          ${key === 'bigimg' ? 'Large' : 'Small'} ${i + 1}
+          ${badge}
+          ${isCdnSigned ? '<span class="img-hint">Press Check CDN to fix</span>' : ''}
+        </div>
+        <div class="asset-url" title="${escAttr(url || '')}">${escHtml(shortUrl)}</div>
       </div>
       <button class="icon-btn mini-btn" data-remove-line="${key}" data-index="${i}" title="Remove">&times;</button>
-    </div>`).join('') : `<div class="mini-empty">No attached images</div>`;
+    </div>`;
+  }).join('');
 }
 
 function renderSpotifyTrackRows() {
