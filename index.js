@@ -10,6 +10,55 @@ const fs = require("fs");
 const path = require("path");
 require("colors");
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Human-simulation session — generated once per process restart.
+// A stable fingerprint is chosen from a pool of real Discord desktop
+// builds, then cookies + X-Super-Properties are derived from it.
+// All simulated Discord API requests share this session so they look
+// like a single consistent browser session, not random per-call noise.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const _SIM_SESSION = (() => {
+    const POOL = [
+        { chrome: '124.0.6367.208', electron: '30.0.6',  cv: '0.0.316', build: 338988, native: 49607, os: '10.0.22631' },
+        { chrome: '122.0.6261.129', electron: '29.4.6',  cv: '0.0.313', build: 334300, native: 48702, os: '10.0.19045' },
+        { chrome: '126.0.6478.127', electron: '31.2.1',  cv: '0.0.320', build: 344862, native: 50901, os: '10.0.22631' },
+        { chrome: '120.0.6099.291', electron: '28.3.3',  cv: '0.0.309', build: 327348, native: 47563, os: '10.0.22631' },
+        { chrome: '118.0.5993.119', electron: '27.3.11', cv: '0.0.305', build: 318682, native: 46102, os: '10.0.19045' },
+    ];
+    const fp  = POOL[Math.floor(Math.random() * POOL.length)];
+    const ua  = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/${fp.cv} Chrome/${fp.chrome} Electron/${fp.electron} Safari/537.36`;
+    const hex = (n) => crypto.randomBytes(n).toString('hex');
+    const uuid = () => `${hex(4)}-${hex(2)}-${hex(2)}-${hex(2)}-${hex(6)}`;
+
+    const dcfId     = uuid();
+    const sdcfId    = hex(34);
+    const cfuvid    = `${hex(4)}_${hex(4)}-${hex(4)}-${hex(8)}-${Math.floor(Date.now() / 1000)}`;
+    const consentId = uuid();
+    const cookies = [
+        `__dcfduid=${dcfId}`,
+        `__sdcfduid=${sdcfId}`,
+        `locale=en-US`,
+        `_cfuvid=${cfuvid}`,
+        `OptanonConsent=isGpcEnabled=0&datestamp=${encodeURIComponent(new Date().toUTCString())}&version=202501.2.0&browserGpcFlag=0&isIABGlobal=false&consentId=${consentId}&interactionCount=1&isAnonUser=1&landingPath=NotLandingPage&groups=C0001%3A1%2CC0002%3A1%2CC0003%3A1`,
+    ].join('; ');
+
+    const superProps = Buffer.from(JSON.stringify({
+        os: 'Windows', browser: 'Discord Client', release_channel: 'stable',
+        client_version: fp.cv, os_version: fp.os, os_arch: 'x64', app_arch: 'x64',
+        system_locale: 'en-US', browser_user_agent: ua, browser_version: fp.electron,
+        client_build_number: fp.build, native_build_number: fp.native,
+        client_event_source: null, design_id: 0,
+    })).toString('base64');
+
+    const contextProps = Buffer.from(JSON.stringify({
+        location: 'User Profile', location_tab: 'mutual_guilds',
+    })).toString('base64');
+
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York';
+
+    return { fp, ua, cookies, superProps, contextProps, tz };
+})();
+
 const VALID_PRESENCE_STATUSES = new Set(['online', 'idle', 'dnd']);
 const MIN_STREAM_ROTATION_SEC = 60;
 const MIN_CUSTOM_STATUS_SEC = 60;
@@ -180,20 +229,122 @@ class GetImage {
         }
     }
 
-    // ── Low-level: call Discord's external-assets API with retry (3×, exponential back-off)
+    // ── Human-simulation nonce (Discord Snowflake-like ID) ───────────
+    _simNonce() {
+        const epoch = BigInt(Date.now() - 1420070400000);
+        const inc   = BigInt(Math.floor(Math.random() * 4194304));
+        return String((epoch << 22n) | inc);
+    }
+
+    // ── Human timing jitter: realistic pause before a request ────────
+    _humanPause(minMs = 280, maxMs = 650) {
+        const ms = minMs + Math.random() * (maxMs - minMs);
+        return new Promise(r => setTimeout(r, Math.round(ms)));
+    }
+
+    // ── Primary: fully-simulated Discord desktop client request ──────
+    // Calls POST /api/v9/applications/{appId}/external-assets directly
+    // with a complete Discord desktop browser fingerprint, stable session
+    // cookies, X-Super-Properties, and human timing jitter.
+    // This looks like a real Discord client, not a bot API call.
+    async _tryGetExternalSimulated(urls, applicationId) {
+        const token = this.client?.token;
+        if (!token) throw new Error('No client token available');
+
+        const s   = _SIM_SESSION;
+        const app = applicationId || '1109522937989562409';
+
+        await this._humanPause(280, 650);
+
+        const r = await fetch(
+            `https://discord.com/api/v9/applications/${app}/external-assets`,
+            {
+                method: 'POST',
+                signal: AbortSignal.timeout(15000),
+                headers: {
+                    'Authorization':         token,
+                    'User-Agent':            s.ua,
+                    'X-Super-Properties':    s.superProps,
+                    'X-Context-Properties':  s.contextProps,
+                    'X-Discord-Locale':      'en-US',
+                    'X-Discord-Timezone':    s.tz,
+                    'X-Debug-Options':       'bugReporterEnabled',
+                    'X-Nonce':               this._simNonce(),
+                    'Cookie':                s.cookies,
+                    'Content-Type':          'application/json',
+                    'Accept':                '*/*',
+                    'Accept-Language':       'en-US,en;q=0.9',
+                    'Accept-Encoding':       'gzip, deflate, br',
+                    'Connection':            'keep-alive',
+                    'Sec-Fetch-Dest':        'empty',
+                    'Sec-Fetch-Mode':        'cors',
+                    'Sec-Fetch-Site':        'same-origin',
+                    'Referer':               'https://discord.com/channels/@me',
+                    'Origin':                'https://discord.com',
+                },
+                body: JSON.stringify({ urls }),
+            }
+        );
+
+        if (!r.ok) {
+            const body = await r.text().catch(() => '');
+            throw new Error(`HTTP ${r.status} — ${body.slice(0, 120)}`);
+        }
+
+        const data = await r.json();
+        if (!Array.isArray(data) || !data.length) {
+            throw new Error('External-assets API returned empty array');
+        }
+        return data;
+    }
+
+    // ── Low-level: call Discord's external-assets API ─────────────
+    // Strategy: simulated human request first (3 attempts with back-off),
+    // then falls back to the discord.js-selfbot-v13 library if simulation
+    // fails entirely. The library is kept as a safety net, not removed.
     async _tryGetExternal(urls, applicationId) {
-        const { getExternal } = RichPresence;
         const requested = urls.filter(Boolean);
         if (!requested.length) return [];
+
+        // ── Pass 1: Full human simulation ────────────────────────────
         for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-                const images = await getExternal(this.client, applicationId || "1109522937989562409", ...requested);
-                if (images.length) return images;
-                throw new Error("Discord returned no external asset paths");
+                const images = await this._tryGetExternalSimulated(requested, applicationId);
+                if (images.length) {
+                    if (attempt > 1) console.log(`[Image] Simulated getExternal succeeded (attempt ${attempt})`.green);
+                    else             console.log(`[Image] Simulated getExternal succeeded`.green);
+                    return images;
+                }
+                throw new Error('Empty result');
             } catch (err) {
-                if (attempt === 3) throw err;
-                console.log(`[Image] getExternal attempt ${attempt} failed (${err.message}) — retrying in ${attempt * 2}s…`.yellow);
-                await new Promise(r => setTimeout(r, attempt * 2000));
+                if (attempt < 3) {
+                    console.log(`[Image] Sim attempt ${attempt} failed (${err.message}) — retry in ${attempt * 2}s…`.yellow);
+                    await new Promise(r => setTimeout(r, attempt * 2000));
+                } else {
+                    console.log(`[Image] Simulated getExternal failed after 3 attempts: ${err.message}`.yellow);
+                    console.log(`[Image] Falling back to library getExternal…`.grey);
+                }
+            }
+        }
+
+        // ── Pass 2: discord.js-selfbot-v13 library (fallback) ────────
+        const { getExternal } = RichPresence;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                const images = await getExternal(this.client, applicationId || '1109522937989562409', ...requested);
+                if (images.length) {
+                    console.log(`[Image] Library getExternal succeeded (fallback)`.cyan);
+                    return images;
+                }
+                throw new Error('Discord returned no external asset paths');
+            } catch (err) {
+                if (attempt < 3) {
+                    console.log(`[Image] Library attempt ${attempt} failed (${err.message}) — retry in ${attempt * 2}s…`.yellow);
+                    await new Promise(r => setTimeout(r, attempt * 2000));
+                } else {
+                    console.log(`[Image] Library getExternal also failed: ${err.message}`.red);
+                    throw err;
+                }
             }
         }
         return [];
