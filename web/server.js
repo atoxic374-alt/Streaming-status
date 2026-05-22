@@ -522,6 +522,21 @@ function cdnUrlKey(url) {
   catch { return url; }
 }
 
+// Convert a signed cdn.discordapp.com/attachments URL to a stable
+// media.discordapp.net URL that Discord's external-assets API can proxy.
+// Signed attachment URLs are rejected by getExternal — this is the fix.
+function convertCdnToMediaUrl(url) {
+  try {
+    if (!url) return url;
+    const u = new URL(url);
+    if (u.hostname !== 'cdn.discordapp.com') return url;
+    if (!u.pathname.startsWith('/attachments/')) return url;
+    u.hostname = 'media.discordapp.net';
+    u.search = '';
+    return u.toString();
+  } catch { return url; }
+}
+
 // Returns true if this Discord CDN attachment URL has expired
 function isExpiredCdnUrl(url) {
   try {
@@ -581,7 +596,9 @@ async function resolveManagedUploadUrl(url, manifest = loadManifest()) {
 
   const entry = manifestEntryForFile(manifest, fileName);
   if (entry?.cdnUrl && !isExpiredCdnUrl(entry.cdnUrl)) {
-    return { url: entry.cdnUrl, status: 'refreshed', detail: 'Resolved upload URL to existing Discord CDN URL' };
+    // Return stable media.discordapp.net URL — getExternal rejects signed cdn.discordapp.com URLs
+    const mediaUrl = entry.mediaUrl || convertCdnToMediaUrl(entry.cdnUrl);
+    return { url: mediaUrl, status: 'refreshed', detail: 'Resolved upload URL to stable Discord media URL' };
   }
 
   const localFile = entry?.fileName || (fs.existsSync(path.join(PATHS.uploads, fileName)) ? fileName : null);
@@ -592,7 +609,7 @@ async function resolveManagedUploadUrl(url, manifest = loadManifest()) {
   const fresh = await refreshCdnUrl(localFile);
   if (fresh) Object.assign(manifest, loadManifest());
   return fresh
-    ? { url: fresh, status: 'refreshed', detail: 'Uploaded local file to Discord CDN' }
+    ? { url: convertCdnToMediaUrl(fresh), status: 'refreshed', detail: 'Uploaded local file to Discord CDN' }
     : { url: null, status: 'error', detail: 'Could not upload to Discord CDN; check token configuration' };
 }
 
@@ -1076,6 +1093,7 @@ async function refreshCdnUrl(fileName) {
     entry.filePath = filePath;
     entry.mimeType = entry.mimeType || mimeType;
     entry.cdnUrl = newUrl;
+    entry.mediaUrl = convertCdnToMediaUrl(newUrl);
     entry.sha256 = entry.sha256 || imageHash;
     entry.refreshedAt = Date.now();
     manifest[fileName] = entry;
@@ -1244,11 +1262,12 @@ app.post('/api/uploads/batch', async (req, res) => {
       e?.sha256 === imageHash && e?.cdnUrl && !isExpiredCdnUrl(e.cdnUrl));
 
     if (existing) {
-      const entry = { fileName, filePath, cdnUrl: existing.cdnUrl, mimeType, sha256: imageHash, uploadedAt: Date.now(), dedupedFrom: existing.fileName || null };
+      const mediaUrl = existing.mediaUrl || convertCdnToMediaUrl(existing.cdnUrl);
+      const entry = { fileName, filePath, cdnUrl: existing.cdnUrl, mediaUrl, mimeType, sha256: imageHash, uploadedAt: Date.now(), dedupedFrom: existing.fileName || null };
       manifest[fileName] = entry;
       manifest[cdnUrlKey(existing.cdnUrl)] = entry;
       appendLog(`[Batch] Dedup [${i+1}/${rawItems.length}] ${fileName}`);
-      results[i] = { ok: true, url: existing.cdnUrl, cdn: true, deduped: true, fileName, index: i };
+      results[i] = { ok: true, url: mediaUrl, cdn: true, deduped: true, fileName, index: i };
       continue;
     }
 
@@ -1268,10 +1287,12 @@ app.post('/api/uploads/batch', async (req, res) => {
     for (let j = 0; j < toUpload.length; j++) {
       const t = toUpload[j];
       const cdnUrl = uploadResults[j]?.url || null;
-      const entry = { fileName: t.fileName, filePath: t.filePath, cdnUrl, mimeType: t.mimeType, sha256: t.imageHash, uploadedAt: Date.now() };
+      const mediaUrl = cdnUrl ? convertCdnToMediaUrl(cdnUrl) : null;
+      const entry = { fileName: t.fileName, filePath: t.filePath, cdnUrl, mediaUrl, mimeType: t.mimeType, sha256: t.imageHash, uploadedAt: Date.now() };
       freshManifest[t.fileName] = entry;
       if (cdnUrl) freshManifest[cdnUrlKey(cdnUrl)] = entry;
-      results[t.index] = { ok: !!cdnUrl, url: cdnUrl || null, cdn: !!cdnUrl, fileName: t.fileName, index: t.index,
+      // Return mediaUrl so the frontend stores the stable URL in config
+      results[t.index] = { ok: !!cdnUrl, url: mediaUrl || null, cdn: !!cdnUrl, fileName: t.fileName, index: t.index,
         ...(cdnUrl ? {} : { error: 'Upload failed — check token and upload target' }) };
     }
     saveManifest(freshManifest);
@@ -1417,7 +1438,8 @@ app.post('/api/uploads/check', async (req, res) => {
     // ── Discord CDN URL: check expiry first
     if (!isExpiredCdnUrl(url)) {
       const entry = manifest[cdnUrlKey(url)];
-      results.push({ url, status: 'ok', newUrl: url,
+      const mediaUrl = (entry?.mediaUrl) || convertCdnToMediaUrl(url);
+      results.push({ url, status: 'ok', newUrl: mediaUrl,
         detail: entry ? 'Valid CDN URL — tracked in manifest' : 'Valid CDN URL — externally managed' });
       continue;
     }
@@ -1427,7 +1449,7 @@ app.post('/api/uploads/check', async (req, res) => {
     if (entry?.fileName) {
       const fresh = await refreshCdnUrl(entry.fileName);
       results.push(fresh
-        ? { url, status: 'refreshed', newUrl: fresh, detail: 'CDN URL expired — re-uploaded automatically' }
+        ? { url, status: 'refreshed', newUrl: convertCdnToMediaUrl(fresh), detail: 'CDN URL expired — re-uploaded automatically' }
         : { url, status: 'error',     newUrl: null,  detail: 'CDN URL expired — re-upload failed, check token' });
     } else {
       results.push({ url, status: 'expired', newUrl: null,
@@ -1465,13 +1487,18 @@ app.get('/api/uploads/resolve', async (req, res) => {
     const entry = manifest[key];
     if (entry?.fileName) {
       const fresh = await refreshCdnUrl(entry.fileName);
-      if (fresh) return res.json({ url: fresh, refreshed: true });
+      if (fresh) return res.json({ url: convertCdnToMediaUrl(fresh), refreshed: true });
     }
     appendLog(`[Image] No manifest entry for expired URL — cannot refresh`, true);
     return res.json({ url, refreshed: false, warning: 'Expired CDN URL — re-upload the image in settings' });
   }
 
-  // Case 3: Valid, non-expired URL — use as-is
+  // Case 3: Discord CDN attachment URL that is not expired — convert to stable media URL
+  if (url.includes('cdn.discordapp.com/attachments')) {
+    return res.json({ url: convertCdnToMediaUrl(url), refreshed: true });
+  }
+
+  // Case 4: Valid, non-expired, non-attachment URL — use as-is
   return res.json({ url, refreshed: false });
 });
 

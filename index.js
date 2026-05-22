@@ -80,6 +80,22 @@ class GetImage {
         } catch { return false; }
     }
 
+    // Convert a signed cdn.discordapp.com/attachments URL to a stable
+    // media.discordapp.net URL that getExternal can actually proxy.
+    // Discord's external-assets API rejects signed attachment URLs.
+    convertCdnToMediaUrl(url) {
+        try {
+            if (!url) return url;
+            const u = new URL(url);
+            if (u.hostname !== 'cdn.discordapp.com') return url;
+            if (!u.pathname.startsWith('/attachments/')) return url;
+            // Replace host, strip signed query params
+            u.hostname = 'media.discordapp.net';
+            u.search = '';
+            return u.toString();
+        } catch { return url; }
+    }
+
     // Check if URL is localhost (Discord servers can't reach it)
     isLocalUrl(url) {
         try {
@@ -89,6 +105,14 @@ class GetImage {
     }
 
     isManagedUploadUrl(url) {
+        // Signed cdn.discordapp.com/attachments URLs must always be resolved
+        // to their stable media.discordapp.net equivalents before getExternal.
+        try {
+            if (url) {
+                const u = new URL(url);
+                if (u.hostname === 'cdn.discordapp.com' && u.pathname.startsWith('/attachments/')) return true;
+            }
+        } catch {}
         const fileName = this.uploadFileNameFromUrl(url);
         if (!fileName) return false;
         if (this.isLocalUrl(url)) return true;
@@ -143,6 +167,15 @@ class GetImage {
             return data.url || url;
         } catch (e) {
             console.log(`[Image] Resolve error: ${e.message}`.red);
+            // If it's a CDN attachment URL that we couldn't reach the resolve endpoint for,
+            // fall back to the stable media URL conversion directly rather than returning null.
+            if (managedUpload) {
+                const converted = this.convertCdnToMediaUrl(url);
+                if (converted !== url) {
+                    console.log(`[Image] Fallback: using media.discordapp.net URL directly`.yellow);
+                    return converted;
+                }
+            }
             return managedUpload || localUrl ? null : url;
         }
     }
@@ -162,6 +195,12 @@ class GetImage {
             ]);
 
             if (!url1 && !url2) throw new Error("No Image after resolution");
+
+            // Convert signed cdn.discordapp.com/attachments URLs to stable
+            // media.discordapp.net URLs — Discord's external-assets API rejects
+            // signed attachment URLs and returns an empty array for them.
+            if (url1) url1 = this.convertCdnToMediaUrl(url1);
+            if (url2) url2 = this.convertCdnToMediaUrl(url2);
 
             const { getExternal } = RichPresence;
             const requested = [url1, url2].filter(Boolean);
