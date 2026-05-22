@@ -72,7 +72,8 @@ const API = {
   start:       '/api/runtime/start',
   stop:        '/api/runtime/stop',
   refresh:     '/api/runtime/refresh',
-  validate:    '/api/tokens/validate',
+  validate:        '/api/tokens/validate',
+  validateStored:  '/api/tokens/validate-stored',
   profiles:    '/api/profiles',
   stats:       '/api/stats',
   schedule:    '/api/schedule',
@@ -1704,9 +1705,29 @@ async function loadEmojiPicker(silent = false) {
 }
 
 // ── Tokens ─────────────────────────────────────────────────────────
+function isMaskedToken(t) { return typeof t === 'string' && t.includes('••'); }
+
 async function validateTokens(tokens) {
   if (!tokens.length) return [];
-  return await post(API.validate, { tokens });
+
+  const masked  = tokens.filter(isMaskedToken);
+  const plain   = tokens.filter(t => !isMaskedToken(t));
+
+  // All masked → server already has the real tokens, validate them server-side
+  if (!plain.length) return await get(API.validateStored);
+
+  // No masked → all new plain tokens, validate them directly
+  if (!masked.length) return await post(API.validate, { tokens: plain });
+
+  // Mix: validate plain tokens directly, get stored results for masked ones
+  const [plainResults, storedResults] = await Promise.all([
+    post(API.validate, { tokens: plain }),
+    get(API.validateStored),
+  ]);
+
+  // Rebuild in original order
+  let pi = 0, si = 0;
+  return tokens.map(t => isMaskedToken(t) ? (storedResults[si++] || { valid: false, error: 'Not found' }) : (plainResults[pi++] || { valid: false, error: 'Unknown' }));
 }
 
 async function renderTokenCards() {

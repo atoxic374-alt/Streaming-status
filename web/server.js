@@ -1694,6 +1694,29 @@ app.get('/api/discord-apps', async (req, res) => {
   }
 });
 
+// ── API: Validate stored tokens server-side (no raw token sent to browser) ──
+app.get('/api/tokens/validate-stored', async (req, res) => {
+  const tokens = extractTokens();
+  if (!tokens.length) return res.json([]);
+  const results = await Promise.allSettled(tokens.map(async (token, index) => {
+    try {
+      const u_data = await fetchTokenAccount(token);
+      return {
+        valid: true,
+        id: u_data.id,
+        username: u_data.username,
+        tag: u_data.tag,
+        avatar: u_data.avatar,
+        masked: maskToken(token),
+        nitro: false,
+      };
+    } catch (e) {
+      return { valid: false, error: e.message, masked: maskToken(token) };
+    }
+  }));
+  res.json(results.map(r => r.value || { valid: false, error: r.reason?.message || 'Unknown error', masked: '••••' }));
+});
+
 // ── API: Token Validation ──────────────────────────────────────────
 app.post('/api/tokens/validate', async (req, res) => {
   const { tokens } = req.body;
