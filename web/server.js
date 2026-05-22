@@ -1462,10 +1462,32 @@ app.post('/api/uploads/check', async (req, res) => {
 });
 
 // ── API: Image URL Resolver (used by bot to refresh expired CDN URLs)
-// GET /api/uploads/resolve?url=<encoded_url>
+// GET /api/uploads/resolve?url=<encoded_url>[&force=1]
+// force=1 → skip cache, always re-upload from local backup (used by bot fallback strategy)
 app.get('/api/uploads/resolve', async (req, res) => {
-  const url = String(req.query.url || '').trim();
+  const url   = String(req.query.url   || '').trim();
+  const force = req.query.force === '1';
   if (!url) return res.status(400).json({ error: 'url param required' });
+
+  // Case 0: force re-upload — bot's Strategy 2 calls this when getExternal rejected the cached URL.
+  // We skip the manifest cache and go straight to uploading the local file to get a fresh attachment.
+  if (force && isManagedUploadUrl(url)) {
+    const fileName = uploadFileNameFromUrl(url);
+    if (fileName) {
+      appendLog(`[Image] Force re-upload requested for ${fileName} (Discord rejected cached URL)`);
+      const fresh = await refreshCdnUrl(fileName);
+      if (fresh) {
+        const mediaUrl = convertCdnToMediaUrl(fresh);
+        // Persist new media URL in manifest so future loads use it
+        const manifest = loadManifest();
+        const entry = manifestEntryForFile(manifest, fileName);
+        if (entry) { entry.cdnUrl = fresh; entry.mediaUrl = mediaUrl; saveManifest(manifest); }
+        return res.json({ url: mediaUrl, refreshed: true, forceReuploaded: true });
+      }
+      appendLog(`[Image] Force re-upload failed for ${fileName} — no token or upload error`, true);
+      return res.json({ url: convertCdnToMediaUrl(url), refreshed: false, warning: 'Force re-upload failed — check token config' });
+    }
+  }
 
   // Case 1: URL is from dashboard uploads — return/refresh Discord CDN URL
   if (isManagedUploadUrl(url)) {

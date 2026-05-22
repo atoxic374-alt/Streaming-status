@@ -180,6 +180,52 @@ class GetImage {
         }
     }
 
+    // ── Low-level: call Discord's external-assets API with retry (3×, exponential back-off)
+    async _tryGetExternal(urls, applicationId) {
+        const { getExternal } = RichPresence;
+        const requested = urls.filter(Boolean);
+        if (!requested.length) return [];
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                const images = await getExternal(this.client, applicationId || "1109522937989562409", ...requested);
+                if (images.length) return images;
+                throw new Error("Discord returned no external asset paths");
+            } catch (err) {
+                if (attempt === 3) throw err;
+                console.log(`[Image] getExternal attempt ${attempt} failed (${err.message}) — retrying in ${attempt * 2}s…`.yellow);
+                await new Promise(r => setTimeout(r, attempt * 2000));
+            }
+        }
+        return [];
+    }
+
+    // ── Map getExternal image list back to url1 / url2 slots
+    _buildImageResult(images, url1, url2) {
+        const resolve = (item) => item?.external_asset_path || item?.url;
+        for (const image of images) {
+            if (url1 && image.url === url1) url1 = resolve(image);
+            if (url2 && image.url === url2) url2 = resolve(image);
+        }
+        return { bigImage: url1 || null, smallImage: url2 || null };
+    }
+
+    // ── Ask the server to force-re-upload an image and return a fresh media URL
+    async forceResolveUrl(url) {
+        if (!url) return null;
+        try {
+            const port = process.env.DASHBOARD_PORT || process.env.PORT || 5000;
+            const r = await fetch(
+                `http://localhost:${port}/api/uploads/resolve?url=${encodeURIComponent(url)}&force=1`,
+                { signal: AbortSignal.timeout(30000) }
+            );
+            if (!r.ok) return this.convertCdnToMediaUrl(url);
+            const data = await r.json();
+            return data.url || this.convertCdnToMediaUrl(url);
+        } catch {
+            return this.convertCdnToMediaUrl(url);
+        }
+    }
+
     async get(url1, url2, applicationId) {
         try {
             url1 = this.isValidURL(url1) ? url1 : null;
@@ -188,46 +234,71 @@ class GetImage {
 
             console.log(`[Image] Resolving image URLs…`.grey);
 
-            // Resolve local / expired URLs before passing to Discord
+            // Step 1: Resolve local / managed-upload / expired CDN URLs
             [url1, url2] = await Promise.all([
                 this.resolveImageUrl(url1),
                 this.resolveImageUrl(url2),
             ]);
-
             if (!url1 && !url2) throw new Error("No Image after resolution");
 
-            // Convert signed cdn.discordapp.com/attachments URLs to stable
-            // media.discordapp.net URLs — Discord's external-assets API rejects
-            // signed attachment URLs and returns an empty array for them.
+            // Step 2: Convert any remaining signed CDN URLs to stable media URLs
             if (url1) url1 = this.convertCdnToMediaUrl(url1);
             if (url2) url2 = this.convertCdnToMediaUrl(url2);
 
-            const { getExternal } = RichPresence;
-            const requested = [url1, url2].filter(Boolean);
-            console.log(`[Image] Calling Discord external-assets API (${requested.length} image(s))`.grey);
+            // ══════════════════════════════════════════════════════════════
+            // Strategy 1 — media.discordapp.net (stable, no expiry)
+            // This is the primary format. Discord's external-assets API is
+            // expected to accept media.discordapp.net attachment URLs cleanly.
+            // ══════════════════════════════════════════════════════════════
+            const s1urls = [url1, url2].filter(Boolean);
+            console.log(`[Image] Strategy 1 — media.discordapp.net (${s1urls.length} image(s))`.grey);
+            try {
+                const images = await this._tryGetExternal(s1urls, applicationId);
+                if (images.length) {
+                    console.log(`[Image] Strategy 1 accepted by Discord ✓`.green);
+                    return this._buildImageResult(images, url1, url2);
+                }
+            } catch (e1) {
+                console.log(`[Image] Strategy 1 rejected: ${e1.message}`.yellow);
+            }
 
-            // Retry up to 3 times with exponential back-off (2 s, 4 s)
-            let images = [];
-            for (let attempt = 1; attempt <= 3; attempt++) {
-                try {
-                    images = await getExternal(this.client, applicationId || "1109522937989562409", ...requested);
-                    if (images.length) break;
-                    throw new Error("Discord returned no external asset paths");
-                } catch (err) {
-                    if (attempt === 3) throw err;
-                    console.log(`[Image] getExternal attempt ${attempt} failed (${err.message}) — retrying in ${attempt * 2}s…`.yellow);
-                    await new Promise(r => setTimeout(r, attempt * 2000));
+            // ══════════════════════════════════════════════════════════════
+            // Strategy 2 — Force re-upload → fresh CDN → new media URL
+            // Used when Discord rejects the cached media URL (e.g. attachment
+            // deleted from the channel, or rate-limited). Re-uploading the
+            // local file produces a new attachment ID with a clean URL.
+            // Only applies to images that have a local backup (managed uploads).
+            // ══════════════════════════════════════════════════════════════
+            const isMgd1 = url1 && this.isManagedUploadUrl(url1);
+            const isMgd2 = url2 && this.isManagedUploadUrl(url2);
+            if (isMgd1 || isMgd2) {
+                console.log(`[Image] Strategy 2 — force re-upload via dashboard…`.yellow);
+                const [fresh1, fresh2] = await Promise.all([
+                    isMgd1 ? this.forceResolveUrl(url1) : Promise.resolve(url1),
+                    isMgd2 ? this.forceResolveUrl(url2) : Promise.resolve(url2),
+                ]);
+                const s2urls = [fresh1, fresh2].filter(Boolean);
+                if (s2urls.length) {
+                    try {
+                        const images2 = await this._tryGetExternal(s2urls, applicationId);
+                        if (images2.length) {
+                            console.log(`[Image] Strategy 2 accepted by Discord ✓ (re-uploaded)`.green);
+                            return this._buildImageResult(images2, fresh1, fresh2);
+                        }
+                    } catch (e2) {
+                        console.log(`[Image] Strategy 2 rejected: ${e2.message}`.yellow);
+                    }
                 }
             }
 
-            const resolve = (item) => item?.external_asset_path || item?.url;
-            for (const image of images) {
-                if (image.url === url1) url1 = resolve(image);
-                if (image.url === url2) url2 = resolve(image);
-            }
+            // ══════════════════════════════════════════════════════════════
+            // All strategies exhausted — explicit failure (not silent)
+            // ══════════════════════════════════════════════════════════════
+            console.log(`[Image] ✗ Discord rejected all image URL formats — images will be hidden in Rich Presence`.red);
+            console.log(`[Image]   URLs attempted: ${[url1, url2].filter(Boolean).join(' | ')}`.red);
+            console.log(`[Image]   Fix: press "Check CDN" in the dashboard to re-upload images`.yellow);
+            return { bigImage: null, smallImage: null };
 
-            console.log(`[Image] Images loaded OK`.green);
-            return { bigImage: url1, smallImage: url2 };
         } catch (e) {
             console.log(`[Image] Failed to load images: ${e.message}`.red);
             return { bigImage: null, smallImage: null };
