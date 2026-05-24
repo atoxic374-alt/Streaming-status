@@ -1,0 +1,55 @@
+{
+  "setup": {
+    "delay": 60
+  },
+  "config": {
+    "options": {
+      "watch-url": [],
+      "timestamp": "{start}",
+      "humanMode": true,
+      "humanJitter": 0.25,
+      "idleChance": 0.04,
+      "idleMinSec": 60,
+      "idleMaxSec": 240,
+      "botid": "",
+      "activity-name": "",
+      "activity-type": "STREAMING",
+      "strictVerify": true,
+      "status": "online",
+      "presence-status": "online",
+      "requireGatewayEcho": false
+    },
+    "text-1": [],
+    "text-2": [],
+    "text-3": [],
+    "text-4": [],
+    "bigimg": [],
+    "smallimg": [],
+    "button-1": [],
+    "button-2": [],
+    "spotify": {
+      "enabled": false,
+      "tracks": [
+        {
+          "song": "",
+          "artist": "",
+          "duration": 210,
+          "albumArtUrl": "",
+          "albumArtId": "",
+          "songId": "",
+          "albumId": "",
+          "artistIds": ""
+        }
+      ],
+      "song": "",
+      "artist": "",
+      "duration": 210,
+      "albumArtUrl": ""
+    },
+    "customStatus": {
+      "enabled": false,
+      "intervalSec": 60,
+      "messages": []
+    }
+  }
+}
