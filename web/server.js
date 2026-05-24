@@ -17,8 +17,10 @@ const wss = new WebSocketServer({ server: httpServer });
 const BASE_PORT = process.env.PORT || 5000;
 const ROOT = path.join(__dirname, '..');
 
-// On Replit the proxy needs 0.0.0.0; locally bind to 127.0.0.1 only
-const BIND_HOST = process.env.REPLIT_DEV_DOMAIN ? '0.0.0.0' : '127.0.0.1';
+// In cloud/container deployments (Railway/Render/etc.) the service must bind 0.0.0.0.
+// Keep 127.0.0.1 for local development unless HOST was explicitly provided.
+const isCloudRuntime = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RENDER || process.env.REPLIT_DEV_DOMAIN);
+const BIND_HOST = process.env.HOST || (isCloudRuntime ? '0.0.0.0' : '127.0.0.1');
 
 function openBrowser(url) {
   const platform = process.platform;
@@ -811,6 +813,7 @@ findAvailablePort(Number(BASE_PORT)).then((PORT) => {
   httpServer.listen(PORT, BIND_HOST, () => {
     const url = `http://localhost:${PORT}`;
     console.log(`Dashboard running on ${url}`);
+    console.log(`[Info] Listening on ${BIND_HOST}:${PORT} (HOST=${process.env.HOST || 'auto'}, NO_AUTO_OPEN=${process.env.NO_AUTO_OPEN ? '1' : '0'})`);
     if (Number(BASE_PORT) !== PORT) {
       console.log(`[Info] Port ${BASE_PORT} was busy, switched to port ${PORT}`);
     }
