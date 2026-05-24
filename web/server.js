@@ -22,9 +22,18 @@ const BIND_HOST = process.env.REPLIT_DEV_DOMAIN ? '0.0.0.0' : '127.0.0.1';
 
 function openBrowser(url) {
   const platform = process.platform;
-  if (platform === 'win32') spawn('cmd', ['/c', 'start', url], { detached: true, stdio: 'ignore' });
-  else if (platform === 'darwin') spawn('open', [url], { detached: true, stdio: 'ignore' });
-  else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
+  const isHeadless = !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+  if (platform !== 'win32' && platform !== 'darwin' && isHeadless) return;
+
+  const cmd = platform === 'win32' ? 'cmd' : platform === 'darwin' ? 'open' : 'xdg-open';
+  const args = platform === 'win32' ? ['/c', 'start', url] : [url];
+  const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+
+  child.on('error', (err) => {
+    if (err.code !== 'ENOENT') appendLog(`[Dashboard] Auto-open failed: ${err.message}`, true);
+  });
+
+  child.unref();
 }
 
 function findAvailablePort(startPort) {
