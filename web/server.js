@@ -501,9 +501,9 @@ app.get('/api/emojis', async (_, res) => {
       return res.json({ emojis: [], error: err.message || `HTTP ${guildReq.status}` });
     }
 
-    const guilds = (await guildReq.json()).slice(0, 80);
+    const guilds = await guildReq.json();
     const emojis = [];
-    for (const guild of guilds) {
+    for (const guild of Array.isArray(guilds) ? guilds : []) {
       try {
         const r = await fetch(`https://discord.com/api/v10/guilds/${guild.id}/emojis`, {
           headers,
@@ -519,15 +519,22 @@ app.get('/api/emojis', async (_, res) => {
             animated: !!emoji.animated,
             guildId: guild.id,
             guildName: guild.name || 'Server',
+            guildIcon: guild.icon ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png?size=64` : '',
             value: `${emoji.animated ? '<a' : '<'}:${emoji.name}:${emoji.id}>`,
             url: `https://cdn.discordapp.com/emojis/${emoji.id}.${emoji.animated ? 'gif' : 'png'}?size=48`,
           });
         }
       } catch {}
-      if (emojis.length >= 500) break;
     }
 
-    res.json({ emojis: emojis.slice(0, 500) });
+    const seen = new Set();
+    const unique = emojis.filter(item => {
+      if (!item?.id || seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+
+    res.json({ emojis: unique });
   } catch (e) {
     res.json({ emojis: [], error: e.message });
   }
