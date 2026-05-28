@@ -680,3 +680,9 @@ code{font-family:monospace;font-size:11px;background:var(--bg-input);padding:1px
 .stopped-icon{width:80px;height:80px;border-radius:50%;background:rgba(122,80,96,.1);border:1px solid rgba(122,80,96,.25);display:flex;align-items:center;justify-content:center}
 .stopped-title{font-size:22px;font-weight:800;color:#e8d8dc;margin:0}
 .stopped-sub{font-size:14px;color:#6a5258;margin:0;line-height:1.6;text-align:center}
+.emoji-picker-head{flex-wrap:wrap}
+.emoji-guild-filters{display:flex;align-items:center;gap:6px;overflow-x:auto;max-width:100%;padding-bottom:2px}
+.emoji-guild-chip{height:30px;border-radius:999px;border:1px solid var(--border);background:var(--bg-input);color:var(--text-dim);display:flex;align-items:center;gap:6px;padding:0 10px;cursor:pointer;min-width:0}
+.emoji-guild-chip img,.emoji-guild-fallback{width:18px;height:18px;border-radius:50%;object-fit:cover;display:inline-flex;align-items:center;justify-content:center;background:var(--panel);font-size:10px}
+.emoji-guild-chip small{max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.emoji-guild-chip.active,.emoji-guild-chip:hover{border-color:var(--primary);background:var(--primary-dim);color:var(--text)}

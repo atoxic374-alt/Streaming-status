@@ -58,6 +58,7 @@ const S = {
   },
   emojis: [],
   emojiPage: 0,
+  emojiGuildId: null,
   activeCsIndex: 0,
   spotify: {
     enabled: false,
@@ -1111,6 +1112,7 @@ function renderCustomStatusRows() {
 }
 
 function renderEmojiOptions() {
+  renderEmojiGuildFilters();
   renderEmojiGrid();
 }
 
@@ -1123,12 +1125,36 @@ function allEmojiChoices() {
   return [...standard, ...(S.emojis || [])];
 }
 
+
+function renderEmojiGuildFilters() {
+  const host = $('emojiGuildFilters');
+  if (!host) return;
+  const grouped = new Map();
+  for (const emoji of (S.emojis || [])) {
+    if (!emoji?.guildId) continue;
+    if (!grouped.has(emoji.guildId)) grouped.set(emoji.guildId, {
+      guildId: emoji.guildId,
+      guildName: emoji.guildName || 'Server',
+      guildIcon: emoji.guildIcon || '',
+      count: 0,
+    });
+    grouped.get(emoji.guildId).count += 1;
+  }
+  const servers = Array.from(grouped.values()).sort((a,b)=>b.count-a.count || a.guildName.localeCompare(b.guildName));
+  host.innerHTML = servers.length ? servers.map(server => `
+    <button class="emoji-guild-chip${S.emojiGuildId === server.guildId ? ' active' : ''}" data-emoji-guild="${escAttr(server.guildId)}" type="button" title="${escAttr(`${server.guildName} (${server.count})`)}">
+      ${server.guildIcon ? `<img src="${escAttr(server.guildIcon)}" alt="">` : '<span class="emoji-guild-fallback">#</span>'}
+      <small>${escHtml(server.guildName)}</small>
+    </button>`).join('') : '<div class="mini-empty">Load server emojis first</div>';
+}
+
 function renderEmojiGrid() {
   const grid = $('emojiGrid');
   const label = $('emojiPageLabel');
   if (!grid) return;
   const q = ($('emojiSearch')?.value || '').trim().toLowerCase();
   const choices = allEmojiChoices().filter(e => {
+    if (S.emojiGuildId && e.guildId !== S.emojiGuildId) return false;
     if (!q) return true;
     return String(e.name || '').toLowerCase().includes(q) ||
       String(e.guildName || '').toLowerCase().includes(q);
@@ -1140,7 +1166,7 @@ function renderEmojiGrid() {
   if (label) label.textContent = `${choices.length ? S.emojiPage + 1 : 0} / ${choices.length ? pages : 0}`;
   grid.innerHTML = page.length ? page.map(e => `
     <button class="emoji-choice${S.customStatus.messages?.[S.activeCsIndex]?.emoji === e.value ? ' selected' : ''}" data-emoji-value="${escAttr(e.value)}" type="button" title="${escAttr(`${e.name} · ${e.guildName || 'Server'}`)}">
-      ${e.url ? `<img src="${escAttr(e.url)}" alt="">` : `<span>${escHtml(e.value || '×')}</span>`}
+      ${e.url ? `<img src="${escAttr(e.url)}" alt="" loading="lazy" onerror="if(!this.dataset.fallback){this.dataset.fallback='1';this.src='https://cdn.discordapp.com/emojis/${escAttr(e.id || '')}.png?size=48';}else{this.style.display='none';}">` : `<span>${escHtml(e.value || '×')}</span>`}
       <small>${escHtml(e.name || '')}</small>
     </button>`).join('') : `<div class="mini-empty">No emojis match</div>`;
 }
@@ -1235,8 +1261,9 @@ async function loadEmojiPicker(silent = false) {
   try {
     const data = await get(API.emojis);
     S.emojis = data.emojis || [];
+    S.emojiGuildId = null;
     S.emojiPage = 0;
-    renderEmojiGrid();
+    renderEmojiOptions();
     if (!silent) toast(S.emojis.length ? `Loaded ${S.emojis.length} emojis` : (data.error || 'No emojis found'), S.emojis.length ? 'success' : 'info');
   } catch (e) {
     if (!silent) toast(e.message || 'Emoji load failed', 'error');
@@ -1954,6 +1981,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('addCustomStatusBtn')?.addEventListener('click', addCustomStatusMessage);
   $('loadEmojiBtn')?.addEventListener('click', () => loadEmojiPicker(false));
   $('emojiSearch')?.addEventListener('input', () => { S.emojiPage = 0; renderEmojiGrid(); });
+  $('emojiGuildFilters')?.addEventListener('click', e => {
+    const btn = e.target.closest('[data-emoji-guild]');
+    if (!btn) return;
+    const guildId = btn.dataset.emojiGuild || null;
+    S.emojiGuildId = S.emojiGuildId === guildId ? null : guildId;
+    S.emojiPage = 0;
+    renderEmojiOptions();
+  });
   $('emojiPrevBtn')?.addEventListener('click', () => { S.emojiPage = Math.max(0, S.emojiPage - 1); renderEmojiGrid(); });
   $('emojiNextBtn')?.addEventListener('click', () => { S.emojiPage += 1; renderEmojiGrid(); });
   $('customStatusEnabled')?.addEventListener('change', e => {
