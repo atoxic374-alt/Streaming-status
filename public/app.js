@@ -86,6 +86,10 @@ const FIELD_CONFIG = {
   spotifyAlbum:  { label: 'Duration',   hint: 'Full song length in seconds',     type: 'text' },
   spotifyArt:    { label: 'Song Art',   hint: 'Paste an image URL or attach one from the song list', type: 'text' },
 };
+const UPLOAD_QUEUE_STORAGE_KEY = 'uploadQueueV1';
+const MAX_PARALLEL_UPLOADS = 3;
+let uploadQueue = [];
+let activeUploads = 0;
 
 function emptySpotifyTrack() {
   return { song: '', artist: '', duration: 210, albumArtUrl: '' };
@@ -1192,14 +1196,101 @@ function resetPreviewRotation() {
   S.previewImageIdx = 0;
 }
 
+function loadUploadQueue() {
+  try {
+    const raw = localStorage.getItem(UPLOAD_QUEUE_STORAGE_KEY);
+    const list = JSON.parse(raw || '[]');
+    if (!Array.isArray(list)) return [];
+    return list.filter(item => item && item.id && item.name && item.dataUrl && item.target);
+  } catch { return []; }
+}
+function saveUploadQueue() {
+  localStorage.setItem(UPLOAD_QUEUE_STORAGE_KEY, JSON.stringify(uploadQueue));
+}
+function renderUploadProgress() {
+  const host = $('uploadProgressList');
+  if (!host) return;
+  const items = uploadQueue.filter(item => item.status !== 'done');
+  host.innerHTML = items.length ? items.map(item => {
+    const pct = Math.max(0, Math.min(100, Math.round(item.progress || 0)));
+    return `<div class="upload-item">
+      <div class="upload-meta"><strong>${escHtml(item.name)}</strong><span>${escHtml(item.status || 'queued')} · ${pct}%</span></div>
+      <div class="upload-bar"><span style="width:${pct}%"></span></div>
+    </div>`;
+  }).join('') : '<div class="mini-empty">No pending uploads</div>';
+}
+function uploadByXHR(payload, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', API.upload, true);
+    xhr.setRequestHeader('content-type', 'application/json');
+    xhr.upload.onprogress = (evt) => {
+      if (!evt.lengthComputable) return;
+      onProgress((evt.loaded / evt.total) * 100);
+    };
+    xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText || '{}');
+        resolve(data);
+      } catch {
+        reject(new Error('Invalid upload response'));
+      }
+    };
+    xhr.send(JSON.stringify(payload));
+  });
+}
+async function processUploadQueue() {
+  while (activeUploads < MAX_PARALLEL_UPLOADS) {
+    const item = uploadQueue.find(u => u.status === 'queued' || u.status === 'uploading');
+    if (!item) break;
+    item.status = 'uploading';
+    activeUploads += 1;
+    renderUploadProgress();
+    saveUploadQueue();
+    uploadByXHR({ name: item.name, dataUrl: item.dataUrl }, (pct) => {
+      item.progress = pct;
+      item.updatedAt = Date.now();
+      renderUploadProgress();
+      saveUploadQueue();
+    }).then((r) => {
+      if (r.ok && r.url) {
+        if (item.kind === 'spotify') {
+          const track = S.spotify.tracks[item.trackIndex];
+          if (track) track.albumArtUrl = r.url;
+          renderSpotifyTrackRows();
+          renderSpotifyPreview();
+        } else {
+          S.fields[item.target] = S.fields[item.target] || [];
+          S.fields[item.target].push(r.url);
+          resetPreviewRotation();
+          renderStreamEditors();
+          startPreviewRotation();
+        }
+        item.status = 'done';
+        item.progress = 100;
+        delete item.dataUrl;
+      } else {
+        item.status = 'error';
+      }
+    }).catch(() => {
+      item.status = 'error';
+    }).finally(() => {
+      item.updatedAt = Date.now();
+      uploadQueue = uploadQueue.filter(q => !(q.status === 'done' && !q.dataUrl));
+      activeUploads = Math.max(0, activeUploads - 1);
+      saveUploadQueue();
+      renderUploadProgress();
+      processUploadQueue();
+    });
+  }
+}
+
 async function uploadImages(files, key) {
   const list = Array.from(files || []);
   if (!list.length) return;
   for (const file of list) {
-    if (!file.type.startsWith('image/')) {
-      toast('Only image attachments are supported', 'error');
-      continue;
-    }
+    if (!file.type.startsWith('image/')) continue;
     try {
       const dataUrl = await new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -1207,16 +1298,21 @@ async function uploadImages(files, key) {
         reader.onerror = reject;
         reader.readAsDataURL(file);
       });
-      const r = await post(API.upload, { name: file.name, dataUrl });
-      if (r.ok && r.url) S.fields[key].push(r.url);
-      else toast(r.error || 'Upload failed', 'error');
-    } catch (e) {
-      toast(e.message || 'Upload failed', 'error');
-    }
+      uploadQueue.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+        name: file.name,
+        dataUrl,
+        target: key,
+        kind: 'activity',
+        status: 'queued',
+        progress: 0,
+        updatedAt: Date.now(),
+      });
+    } catch (e) { toast(e.message || 'Upload failed', 'error'); }
   }
-  resetPreviewRotation();
-  renderStreamEditors();
-  startPreviewRotation();
+  saveUploadQueue();
+  renderUploadProgress();
+  processUploadQueue();
 }
 
 function addSpotifyTrack() {
@@ -1240,19 +1336,21 @@ async function uploadSpotifyArt(files, index = S.spotify.activeTrack) {
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
-    const r = await post(API.upload, { name: file.name, dataUrl });
-    if (r.ok && r.url) {
-      S.spotify.activeTrack = Math.max(0, Math.min(Number(index) || 0, S.spotify.tracks.length - 1));
-      const track = activeSpotifyTrack(true);
-      if (track) track.albumArtUrl = r.url;
-      renderSpotifyTrackRows();
-      renderSpotifyPreview();
-    } else {
-      toast(r.error || 'Upload failed', 'error');
-    }
-  } catch (e) {
-    toast(e.message || 'Upload failed', 'error');
-  }
+    uploadQueue.push({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2,8)}`,
+      name: file.name,
+      dataUrl,
+      target: 'spotify',
+      kind: 'spotify',
+      trackIndex: Math.max(0, Math.min(Number(index) || 0, S.spotify.tracks.length - 1)),
+      status: 'queued',
+      progress: 0,
+      updatedAt: Date.now(),
+    });
+    saveUploadQueue();
+    renderUploadProgress();
+    processUploadQueue();
+  } catch (e) { toast(e.message || 'Upload failed', 'error'); }
 }
 
 async function loadEmojiPicker(silent = false) {
@@ -1919,6 +2017,13 @@ setInterval(() => {
 // ── Event Wiring ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
   applyTheme(S.theme);
+  uploadQueue = loadUploadQueue().map(item => ({
+    ...item,
+    status: item.status === 'done' ? 'done' : 'queued',
+    progress: Number(item.progress) || 0,
+  }));
+  renderUploadProgress();
+  processUploadQueue();
 
   document.querySelectorAll('.nav-item, .mnav-item').forEach(el => {
     el.addEventListener('click', () => goTo(el.dataset.section));
